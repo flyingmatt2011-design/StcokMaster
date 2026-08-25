@@ -67,6 +67,7 @@ from src.services.daily_market_context import (
 )
 from src.services.social_sentiment_service import SocialSentimentService
 from src.services.intelligence_service import IntelligenceService
+from src.services.a_share_structured_intel import AShareStructuredIntelService
 from src.services.market_hotspot_service import MarketHotspotService
 from src.services.analysis_context_builder import (
     AnalysisContextBuilder,
@@ -289,6 +290,7 @@ class StockAnalysisPipeline:
         except Exception as exc:
             logger.warning("搜索服务初始化失败，将以无搜索模式运行: %s", exc, exc_info=True)
             self.search_service = None
+        self.a_share_structured_intel = AShareStructuredIntelService()
         
         logger.info(f"调度器初始化完成，最大并发数: {self.max_workers}")
         logger.info("已启用技术分析引擎（均线/趋势/量价指标）")
@@ -609,43 +611,82 @@ class StockAnalysisPipeline:
             )
             news_result_count: Optional[int] = None
             self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
+            intel_results = {}
+
+            # A股公告、研报和互动易不依赖搜索 API；使用明确发布日期窗口，
+            # 并沿用现有 SearchResponse 与新闻持久化契约。
+            try:
+                structured_results = self.a_share_structured_intel.fetch(
+                    code,
+                    stock_name,
+                    news_window_days=int(
+                        getattr(
+                            self.search_service,
+                            "news_window_days",
+                            getattr(self.config, "news_max_age_days", 3),
+                        )
+                        or 3
+                    ),
+                )
+                intel_results = AShareStructuredIntelService.merge_responses(
+                    structured_results,
+                    intel_results,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "%s(%s) A股结构化情报获取失败，继续通用搜索: %s",
+                    stock_name,
+                    code,
+                    exc,
+                )
+
             if self.search_service is not None and self.search_service.is_available:
                 logger.info(f"{stock_name}({code}) 开始多维度情报搜索...")
 
                 # 使用多维度搜索（最多5次搜索）
-                intel_results = self.search_service.search_comprehensive_intel(
+                searched_results = self.search_service.search_comprehensive_intel(
                     stock_code=code,
                     stock_name=stock_name,
                     max_searches=5
                 )
-
-                # 格式化情报报告
-                if intel_results:
-                    news_context = self.search_service.format_intel_report(intel_results, stock_name)
-                    total_results = sum(
-                        len(r.results) for r in intel_results.values() if r.success
-                    )
-                    news_result_count = total_results
-                    logger.info(f"{stock_name}({code}) 情报搜索完成: 共 {total_results} 条结果")
-                    logger.debug(f"{stock_name}({code}) 情报搜索结果:\n{news_context}")
-
-                    # 保存新闻情报到数据库（用于后续复盘与查询）
-                    try:
-                        query_context = self._build_query_context(query_id=query_id)
-                        for dim_name, response in intel_results.items():
-                            if response and response.success and response.results:
-                                self.db.save_news_intel(
-                                    code=code,
-                                    name=stock_name,
-                                    dimension=dim_name,
-                                    query=response.query,
-                                    response=response,
-                                    query_context=query_context
-                                )
-                    except Exception as e:
-                        logger.warning(f"{stock_name}({code}) 保存新闻情报失败: {e}")
+                intel_results = AShareStructuredIntelService.merge_responses(
+                    intel_results,
+                    searched_results,
+                )
             else:
-                logger.info(f"{stock_name}({code}) 搜索服务不可用，跳过情报搜索")
+                logger.info(f"{stock_name}({code}) 通用搜索服务不可用，仅使用结构化情报")
+
+            # 格式化情报报告
+            if intel_results:
+                if self.search_service is not None:
+                    news_context = self.search_service.format_intel_report(intel_results, stock_name)
+                else:
+                    news_context = AShareStructuredIntelService.format_for_analysis(
+                        intel_results,
+                        stock_name,
+                    )
+                total_results = sum(
+                    len(r.results) for r in intel_results.values() if r.success
+                )
+                news_result_count = total_results
+                logger.info(f"{stock_name}({code}) 情报搜索完成: 共 {total_results} 条结果")
+                logger.debug(f"{stock_name}({code}) 情报搜索结果:\n{news_context}")
+
+                # 保存新闻情报到数据库（用于后续复盘与查询）
+                try:
+                    query_context = self._build_query_context(query_id=query_id)
+                    for dim_name, response in intel_results.items():
+                        if response and response.success and response.results:
+                            self.db.save_news_intel(
+                                code=code,
+                                name=stock_name,
+                                dimension=dim_name,
+                                query=response.query,
+                                response=response,
+                                query_context=query_context
+                            )
+                except Exception as e:
+                    logger.warning(f"{stock_name}({code}) 保存新闻情报失败: {e}")
 
             # Step 4.5: Social sentiment intelligence (US stocks only)
             if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):

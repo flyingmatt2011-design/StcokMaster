@@ -4615,11 +4615,12 @@ class SearchService:
         lines = [f"【{stock_name} 情报搜索结果】"]
         
         # 维度展示顺序
-        display_order = ['latest_news', 'announcements', 'market_analysis', 'risk_check', 'earnings', 'industry']
+        display_order = ['latest_news', 'announcements', 'interactive', 'market_analysis', 'risk_check', 'earnings', 'industry']
 
         dim_labels = {
             'latest_news': '📰 最新消息',
             'announcements': '📋 公司公告',
+            'interactive': '💬 投资者互动',
             'market_analysis': '📈 机构分析',
             'risk_check': '⚠️ 风险排查',
             'earnings': '📊 业绩预期',
