@@ -73,6 +73,11 @@ from src.services.analysis_context_builder import (
     AnalysisContextBuilder,
     PipelineAnalysisArtifacts,
 )
+from src.services.intel_context_status import (
+    IntelCoverageSummary,
+    format_intel_coverage_note,
+    summarize_intel_coverage,
+)
 from src.services.market_structure_service import MarketStructureService
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
@@ -286,6 +291,7 @@ class StockAnalysisPipeline:
                 searxng_public_instances_enabled=self.config.searxng_public_instances_enabled,
                 news_max_age_days=self.config.news_max_age_days,
                 news_strategy_profile=getattr(self.config, "news_strategy_profile", "short"),
+                news_search_max_workers=getattr(self.config, "news_search_max_workers", 3),
             )
         except Exception as exc:
             logger.warning("搜索服务初始化失败，将以无搜索模式运行: %s", exc, exc_info=True)
@@ -404,6 +410,93 @@ class StockAnalysisPipeline:
             logger.error(f"{stock_name}({code}) {error_msg}")
             return False, error_msg
     
+    def _fetch_intelligence_sources(
+        self,
+        *,
+        code: str,
+        stock_name: str,
+        news_window_days: int,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], List[str]]:
+        """Fetch independent structured and generic intelligence sources concurrently."""
+
+        structured_results: Dict[str, Any] = {}
+        searched_results: Dict[str, Any] = {}
+        unavailable_sources: List[str] = []
+        jobs: Dict[str, Any] = {}
+        started = time.monotonic()
+        unavailable_dimensions = {
+            "structured_intel": [
+                "structured_intel:announcements",
+                "structured_intel:market_analysis",
+                "structured_intel:interactive",
+            ],
+            "generic_search": [
+                "generic_search:latest_news",
+                "generic_search:market_analysis",
+                "generic_search:risk_check",
+                "generic_search:announcements",
+                "generic_search:earnings",
+            ],
+        }
+
+        structured_service = getattr(self, "a_share_structured_intel", None)
+        search_service = getattr(self, "search_service", None)
+
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="intel-source") as executor:
+            if structured_service is not None and structured_service.supports(code):
+                jobs["structured_intel"] = executor.submit(
+                    structured_service.fetch,
+                    code,
+                    stock_name,
+                    news_window_days=news_window_days,
+                )
+
+            if search_service is not None and search_service.is_available:
+                logger.info("%s(%s) 开始多维度情报搜索...", stock_name, code)
+                jobs["generic_search"] = executor.submit(
+                    search_service.search_comprehensive_intel,
+                    stock_code=code,
+                    stock_name=stock_name,
+                    max_searches=5,
+                )
+            else:
+                unavailable_sources.extend(unavailable_dimensions["generic_search"])
+                logger.info("%s(%s) 通用搜索服务不可用，仅使用结构化情报", stock_name, code)
+
+            # Futures are already running concurrently. Read them in a fixed
+            # source order so merge and diagnostic output remain reproducible.
+            for source_name in ("structured_intel", "generic_search"):
+                future = jobs.get(source_name)
+                if future is None:
+                    continue
+                try:
+                    response_map = future.result()
+                    if source_name == "structured_intel":
+                        structured_results = dict(response_map or {})
+                    else:
+                        searched_results = dict(response_map or {})
+                except Exception as exc:
+                    unavailable_sources.extend(unavailable_dimensions[source_name])
+                    logger.warning(
+                        "%s(%s) %s 获取失败，已按 fail-open 继续: %s",
+                        stock_name,
+                        code,
+                        source_name,
+                        exc,
+                        exc_info=True,
+                    )
+
+        logger.info(
+            "%s(%s) 情报双源并发完成: structured=%s维, search=%s维, unavailable=%s, 耗时=%.2fs",
+            stock_name,
+            code,
+            len(structured_results),
+            len(searched_results),
+            unavailable_sources or "none",
+            time.monotonic() - started,
+        )
+        return structured_results, searched_results, unavailable_sources
+
     def analyze_stock(
         self,
         code: str,
@@ -611,68 +704,71 @@ class StockAnalysisPipeline:
             )
             news_result_count: Optional[int] = None
             self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
-            intel_results = {}
+            news_window_days = int(
+                getattr(
+                    self.search_service,
+                    "news_window_days",
+                    getattr(self.config, "news_max_age_days", 3),
+                )
+                or 3
+            )
+            (
+                structured_results,
+                searched_results,
+                unavailable_intel_sources,
+            ) = self._fetch_intelligence_sources(
+                code=code,
+                stock_name=stock_name,
+                news_window_days=news_window_days,
+            )
+            intel_results = AShareStructuredIntelService.merge_responses(
+                structured_results,
+                searched_results,
+            )
+            intel_coverage = summarize_intel_coverage(
+                [*structured_results.values(), *searched_results.values()],
+                unavailable_sources=unavailable_intel_sources,
+            )
+            total_results = sum(
+                len(response.results)
+                for response in intel_results.values()
+                if response and response.success
+            )
+            # The status is classified from unmerged source responses so a
+            # failed source cannot be hidden by a successful source in the same
+            # dimension. The displayed count keeps the existing merged contract.
+            intel_coverage = IntelCoverageSummary(
+                status=intel_coverage.status,
+                successful_with_results=intel_coverage.successful_with_results,
+                successful_empty=intel_coverage.successful_empty,
+                failed=intel_coverage.failed,
+                unavailable=intel_coverage.unavailable,
+                total_results=total_results,
+            )
+            news_result_count = total_results
+            coverage_note = format_intel_coverage_note(
+                intel_coverage,
+                news_window_days=news_window_days,
+                report_language=report_language,
+            )
 
-            # A股公告、研报和互动易不依赖搜索 API；使用明确发布日期窗口，
-            # 并沿用现有 SearchResponse 与新闻持久化契约。
-            try:
-                structured_results = self.a_share_structured_intel.fetch(
-                    code,
-                    stock_name,
-                    news_window_days=int(
-                        getattr(
-                            self.search_service,
-                            "news_window_days",
-                            getattr(self.config, "news_max_age_days", 3),
-                        )
-                        or 3
-                    ),
-                )
-                intel_results = AShareStructuredIntelService.merge_responses(
-                    structured_results,
-                    intel_results,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "%s(%s) A股结构化情报获取失败，继续通用搜索: %s",
-                    stock_name,
-                    code,
-                    exc,
-                )
-
-            if self.search_service is not None and self.search_service.is_available:
-                logger.info(f"{stock_name}({code}) 开始多维度情报搜索...")
-
-                # 使用多维度搜索（最多5次搜索）
-                searched_results = self.search_service.search_comprehensive_intel(
-                    stock_code=code,
-                    stock_name=stock_name,
-                    max_searches=5
-                )
-                intel_results = AShareStructuredIntelService.merge_responses(
-                    intel_results,
-                    searched_results,
-                )
-            else:
-                logger.info(f"{stock_name}({code}) 通用搜索服务不可用，仅使用结构化情报")
-
-            # 格式化情报报告
-            if intel_results:
+            if total_results > 0:
                 if self.search_service is not None:
-                    news_context = self.search_service.format_intel_report(intel_results, stock_name)
-                else:
-                    news_context = AShareStructuredIntelService.format_for_analysis(
+                    formatted_intel = self.search_service.format_intel_report(
                         intel_results,
                         stock_name,
                     )
-                total_results = sum(
-                    len(r.results) for r in intel_results.values() if r.success
+                else:
+                    formatted_intel = AShareStructuredIntelService.format_for_analysis(
+                        intel_results,
+                        stock_name,
+                    )
+                news_context = (
+                    f"{formatted_intel}\n\n{coverage_note}"
+                    if formatted_intel
+                    else coverage_note
                 )
-                news_result_count = total_results
-                logger.info(f"{stock_name}({code}) 情报搜索完成: 共 {total_results} 条结果")
-                logger.debug(f"{stock_name}({code}) 情报搜索结果:\n{news_context}")
-
-                # 保存新闻情报到数据库（用于后续复盘与查询）
+                logger.info("%s(%s) 情报聚合完成: 共 %s 条结果", stock_name, code, total_results)
                 try:
                     query_context = self._build_query_context(query_id=query_id)
                     for dim_name, response in intel_results.items():
@@ -683,10 +779,27 @@ class StockAnalysisPipeline:
                                 dimension=dim_name,
                                 query=response.query,
                                 response=response,
-                                query_context=query_context
+                                query_context=query_context,
                             )
-                except Exception as e:
-                    logger.warning(f"{stock_name}({code}) 保存新闻情报失败: {e}")
+                except Exception as exc:
+                    logger.warning("%s(%s) 保存新闻情报失败: %s", stock_name, code, exc)
+            else:
+                # Never leave the LLM news section empty: zero results now
+                # distinguishes confirmed-empty coverage from unavailable data.
+                news_context = coverage_note
+                logger.info(
+                    "%s(%s) 情报聚合完成: 当前窗口无有效结果, coverage=%s",
+                    stock_name,
+                    code,
+                    intel_coverage.status.value,
+                )
+            logger.info(
+                "%s(%s) 情报覆盖: %s",
+                stock_name,
+                code,
+                intel_coverage.to_dict(),
+            )
+            logger.debug("%s(%s) 情报聚合结果:\n%s", stock_name, code, news_context)
 
             # Step 4.5: Social sentiment intelligence (US stocks only)
             if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
@@ -747,6 +860,7 @@ class StockAnalysisPipeline:
                 enhanced_context["portfolio_context"] = dict(portfolio_context)
             if isinstance(market_structure_context, dict):
                 enhanced_context["market_structure_context"] = market_structure_context
+            enhanced_context["news_coverage"] = intel_coverage.to_dict()
             
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
             (
@@ -766,6 +880,7 @@ class StockAnalysisPipeline:
                     fundamental_context=fundamental_context,
                     news_context=news_context,
                     news_result_count=news_result_count,
+                    news_coverage=intel_coverage.to_dict(),
                     query_id=query_id,
                     portfolio_context=portfolio_context,
                 ),
@@ -2858,6 +2973,7 @@ class StockAnalysisPipeline:
         news_result_count: Optional[int],
         query_id: str,
         portfolio_context: Optional[Dict[str, Any]] = None,
+        news_coverage: Optional[Dict[str, Any]] = None,
     ) -> PipelineAnalysisArtifacts:
         return PipelineAnalysisArtifacts(
             code=code,
@@ -2875,6 +2991,14 @@ class StockAnalysisPipeline:
             metadata={
                 "query_id": query_id,
                 "trigger_source": self.query_source,
+                **(
+                    {
+                        "news_coverage_status": news_coverage.get("status"),
+                        "news_coverage": dict(news_coverage),
+                    }
+                    if isinstance(news_coverage, dict)
+                    else {}
+                ),
             },
             portfolio_context=dict(portfolio_context) if isinstance(portfolio_context, dict) else None,
         )

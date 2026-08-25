@@ -424,6 +424,12 @@ def _build_news_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisContextBl
     metadata: Dict[str, Any] = {}
     if artifacts.news_result_count is not None:
         metadata["news_result_count"] = artifacts.news_result_count
+    coverage_status = str((artifacts.metadata or {}).get("news_coverage_status") or "").upper()
+    coverage = (artifacts.metadata or {}).get("news_coverage")
+    if coverage_status:
+        metadata["coverage_status"] = coverage_status
+    if isinstance(coverage, dict):
+        metadata["coverage"] = dict(coverage)
 
     if not content:
         return AnalysisContextBlock(
@@ -432,6 +438,34 @@ def _build_news_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisContextBl
                 "content": AnalysisContextItem(
                     status=ContextFieldStatus.MISSING,
                     missing_reason="news_context_missing",
+                )
+            },
+            metadata=metadata,
+        )
+
+    # New coverage-aware contexts keep an explicit zero-result/failure note in
+    # the pack. Legacy callers without coverage metadata retain old semantics.
+    if coverage_status:
+        status_by_coverage = {
+            "COVERED": ContextFieldStatus.AVAILABLE,
+            "EMPTY_CONFIRMED": ContextFieldStatus.AVAILABLE,
+            "PARTIAL": ContextFieldStatus.PARTIAL,
+            "UNAVAILABLE": ContextFieldStatus.FETCH_FAILED,
+        }
+        status = status_by_coverage.get(coverage_status, ContextFieldStatus.MISSING)
+        return AnalysisContextBlock(
+            status=status,
+            items={
+                "content": AnalysisContextItem(
+                    status=status,
+                    value=content,
+                    missing_reason=(
+                        "news_sources_unavailable"
+                        if coverage_status == "UNAVAILABLE"
+                        else "news_sources_partial"
+                        if coverage_status == "PARTIAL"
+                        else None
+                    ),
                 )
             },
             metadata=metadata,

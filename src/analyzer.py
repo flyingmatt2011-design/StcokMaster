@@ -4073,6 +4073,9 @@ class GeminiAnalyzer:
    - 输出到 `risk_alerts` / `positive_catalysts` / `latest_news` 的每一条都必须带具体日期（YYYY-MM-DD）
    - 超出近{news_window_days}日窗口的新闻一律忽略
    - 时间未知、无法确定发布日期的新闻一律忽略
+5. 🧭 **覆盖状态（强制）**：
+   - 若新闻段标注 `PARTIAL` 或 `UNAVAILABLE`，不得把“无新闻”推断为“无利空”
+   - 必须在 `data_limitations` / `confidence_reason` 中记录消息面未完整覆盖，并下调相关判断置信度
 
 ```
 {news_context}

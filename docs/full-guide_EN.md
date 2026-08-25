@@ -334,8 +334,11 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `SOCIAL_SENTIMENT_API_URL` | Stock Sentiment API endpoint (default `https://api.adanos.org`) | Optional |
 | `SEARXNG_BASE_URLS` | SearXNG self-hosted instances (quota-free fallback, enable format: json in settings.yml); when empty the app auto-discovers public instances | Optional |
 | `SEARXNG_PUBLIC_INSTANCES_ENABLED` | Auto-discover public SearXNG instances from `searx.space` when `SEARXNG_BASE_URLS` is empty (default `true`) | Optional |
+| `NEWS_STRATEGY_PROFILE` | News-window profile: `ultra_short` (1d), `short` (3d), `medium` (7d), or `long` (30d) | Default `short` |
+| `NEWS_MAX_AGE_DAYS` | Maximum age admitted into the current-news context | Default `3` |
+| `NEWS_SEARCH_MAX_WORKERS` | Maximum concurrent comprehensive-search dimensions (1-10); the conservative default reduces downstream rate-limit risk | Default `3` |
 
-> Behavior note: Search and social sentiment are optional enhancement services. If either service fails to initialize, the system logs a warning and degrades gracefully by skipping that stage without blocking the core analysis flow.
+> Behavior note: Search and social sentiment are optional enhancement services. Failures remain fail-open, while the news context explicitly distinguishes `COVERED`, `EMPTY_CONFIRMED`, `PARTIAL`, and `UNAVAILABLE` so unavailable sources are not mistaken for absence of downside news. Structured intelligence and generic search run concurrently; generic-search dimensions are bounded by `NEWS_SEARCH_MAX_WORKERS`.
 
 ### Futu Portfolio Import Configuration
 

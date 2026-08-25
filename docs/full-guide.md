@@ -373,9 +373,10 @@ daily_stock_analysis/
 | `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `true`） | 可选 |
 | `NEWS_STRATEGY_PROFILE` | 新闻策略窗口档位：`ultra_short`(1天)/`short`(3天)/`medium`(7天)/`long`(30天)；实际窗口取与 `NEWS_MAX_AGE_DAYS` 的最小值 | 默认 `short` |
 | `NEWS_MAX_AGE_DAYS` | 新闻最大时效（天），搜索时限制结果在近期内 | 默认 `3` |
+| `NEWS_SEARCH_MAX_WORKERS` | 多维情报搜索最大并发数（1-10）；默认保守设置为 3，调高可能触发搜索 API 限流 | 默认 `3` |
 | `BIAS_THRESHOLD` | 乖离率阈值（%），超过提示不追高；强势趋势股自动放宽到 1.5 倍 | 默认 `5.0` |
 
-> 行为说明：搜索服务与社交舆情服务为可选增强链路。任一服务初始化失败时，系统会记录 warning 并降级为跳过该服务，仅影响对应环节，不会阻塞技术面主链路和主任务流。
+> 行为说明：搜索服务与社交舆情服务为可选增强链路。失败时主流程保持 fail-open；新闻上下文会明确区分 `COVERED`、`EMPTY_CONFIRMED`、`PARTIAL`、`UNAVAILABLE`，避免把“源不可用”误读成“没有利空”。结构化情报与通用搜索并行执行，通用搜索内部维度受 `NEWS_SEARCH_MAX_WORKERS` 限制。
 
 ### 新闻检索可解释排序（Issue #1356）
 

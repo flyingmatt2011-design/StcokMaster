@@ -1218,6 +1218,32 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
+    "NEWS_SEARCH_MAX_WORKERS": {
+        "title": "News Search Max Workers",
+        "description": "Maximum concurrent dimensions in comprehensive news search. Keep conservative to avoid downstream API rate limits.",
+        "category": "data_source",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "3",
+        "options": [],
+        "validation": {"min": 1, "max": 10},
+        "display_order": 62,
+        "help_key": "settings.data_source.news_window",
+        "examples": [
+            "NEWS_SEARCH_MAX_WORKERS=3",
+            "NEWS_SEARCH_MAX_WORKERS=1",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：环境变量完整列表",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
+            },
+        ],
+        "warning_codes": [],
+    },
     "BIAS_THRESHOLD": {
         "title": "Bias Threshold (%)",
         "description": "Deviation threshold from MA5 (%). Exceeding this triggers 'do not chase' warning. Strong trend stocks auto-widen to 1.5x.",
@@ -1230,7 +1256,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "5.0",
         "options": [],
         "validation": {"min": 0.0, "max": 50.0},
-        "display_order": 62,
+        "display_order": 63,
     },
     "PYTDX_HOST": {
         "title": "Pytdx Host",

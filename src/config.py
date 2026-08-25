@@ -988,6 +988,7 @@ class Config:
     # === 新闻与分析筛选配置 ===
     news_max_age_days: int = 3   # 新闻最大时效（天）
     news_strategy_profile: str = "short"  # 新闻窗口策略档位：ultra_short/short/medium/long
+    news_search_max_workers: int = 3  # 多维情报搜索并发数（保守默认，避免搜索 API 限流）
     news_intel_retention_days: int = 30  # 本地资讯池保留天数
     news_intel_fetch_timeout_sec: float = 8.0  # 单个资讯源拉取超时
     news_intel_max_items_per_source: int = 50  # 单次每个资讯源最多采集条数
@@ -1872,6 +1873,13 @@ class Config:
             news_max_age_days=parse_env_int(os.getenv('NEWS_MAX_AGE_DAYS'), 3, field_name='NEWS_MAX_AGE_DAYS', minimum=1),
             news_strategy_profile=cls._parse_news_strategy_profile(
                 os.getenv('NEWS_STRATEGY_PROFILE', 'short')
+            ),
+            news_search_max_workers=parse_env_int(
+                os.getenv('NEWS_SEARCH_MAX_WORKERS'),
+                3,
+                field_name='NEWS_SEARCH_MAX_WORKERS',
+                minimum=1,
+                maximum=10,
             ),
             news_intel_retention_days=parse_env_int(
                 os.getenv('NEWS_INTEL_RETENTION_DAYS'),
