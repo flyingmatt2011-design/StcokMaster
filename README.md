@@ -33,7 +33,7 @@
 ## 🖥️ 产品预览
 
 <p align="center">
-  <img src="docs/assets/readme_workspace_tour_20260510.gif" alt="DSA Web 工作台演示" width="720">
+  <img src="docs/assets/stockmaster-terminal-preview.png" alt="StockMaster 终端工作台" width="960">
 </p>
 
 ## ✨ 功能特性
