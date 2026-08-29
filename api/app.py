@@ -220,7 +220,7 @@ def _schedule_stock_index_background_refresh(app: FastAPI, reason: str) -> None:
 
 
 async def _prewarm_daily_market_context_in_background() -> None:
-    """Prepare today's A-share market snapshot before the first desktop analysis."""
+    """Reuse a persisted A-share market snapshot without generating one at startup."""
     try:
         await asyncio.sleep(3)
 
@@ -238,6 +238,7 @@ async def _prewarm_daily_market_context_in_background() -> None:
                 config=config,
                 query_source="desktop_startup_prewarm",
                 daily_market_context_enabled=True,
+                daily_market_context_allow_generate=False,
             )
             context = pipeline._load_daily_market_context(
                 "cn",
@@ -246,7 +247,10 @@ async def _prewarm_daily_market_context_in_background() -> None:
             return context is not None
 
         warmed = await run_in_threadpool(_prewarm)
-        logger.info("[market-context] desktop startup prewarm completed: available=%s", warmed)
+        logger.info(
+            "[market-context] desktop startup read-only prewarm completed: available=%s",
+            warmed,
+        )
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - startup prewarm must stay best-effort.
