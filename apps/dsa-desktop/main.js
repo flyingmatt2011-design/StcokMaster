@@ -220,6 +220,10 @@ const STOCKMASTER_BACKEND_ADAPTER_FILES = Object.freeze([
   path.join('data_provider', 'realtime_types.py'),
   path.join('data_provider', 'akshare_fetcher.py'),
   path.join('data_provider', 'efinance_fetcher.py'),
+  path.join('templates', '_macros.j2'),
+  path.join('templates', 'report_brief.j2'),
+  path.join('templates', 'report_markdown.j2'),
+  path.join('templates', 'report_wechat.j2'),
 ]);
 
 function syncDevelopmentBackendAdapters({ repoRoot = appRootDev, runtimeRoot, enabled = true } = {}) {

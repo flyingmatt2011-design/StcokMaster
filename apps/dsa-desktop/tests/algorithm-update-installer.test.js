@@ -8,12 +8,13 @@ const { validateArchiveEntries, stageBackendCandidate } = require('../algorithm-
 test('archive validator rejects traversal, UI, user-data and duplicate paths', () => {
   const result = validateArchiveEntries([
     { path: 'src/analyzer.py', size: 10, type: 'file' },
+    { path: 'templates/report_markdown.j2', size: 10, type: 'file' },
     { path: '../secret.py', size: 10, type: 'file' },
     { path: 'apps/dsa-web/App.tsx', size: 10, type: 'file' },
     { path: 'data/stock_analysis.db', size: 10, type: 'file' },
     { path: 'SRC/ANALYZER.PY', size: 10, type: 'file' },
   ]);
-  assert.deepEqual(result.allowedPaths, ['src/analyzer.py']);
+  assert.deepEqual(result.allowedPaths, ['src/analyzer.py', 'templates/report_markdown.j2']);
   assert.equal(result.blockedPaths.length, 4);
 });
 
@@ -24,16 +25,29 @@ test('candidate staging copies current runtime and overlays only eligible files'
   const staging = path.join(root, 'staging');
   await fs.mkdir(path.join(current, 'src'), { recursive: true });
   await fs.mkdir(path.join(archive, 'src'), { recursive: true });
+  await fs.mkdir(path.join(current, 'templates'), { recursive: true });
+  await fs.mkdir(path.join(archive, 'templates'), { recursive: true });
   await fs.writeFile(path.join(current, 'main.py'), 'VALUE = 1\n');
   await fs.writeFile(path.join(current, 'server.py'), 'app = object()\n');
   await fs.writeFile(path.join(current, 'src', 'analyzer.py'), 'VALUE = 1\n');
   await fs.writeFile(path.join(current, 'src', 'keep.py'), 'KEEP = 1\n');
+  await fs.writeFile(path.join(current, 'templates', 'report_markdown.j2'), 'old template\n');
   await fs.writeFile(path.join(archive, 'src', 'analyzer.py'), 'VALUE = 2\n');
-  const result = await stageBackendCandidate({ currentRoot: current, archiveRoot: archive, stagingRoot: staging, eligiblePaths: ['src/analyzer.py'] });
+  await fs.writeFile(path.join(archive, 'templates', 'report_markdown.j2'), 'new template\n');
+  const result = await stageBackendCandidate({
+    currentRoot: current,
+    archiveRoot: archive,
+    stagingRoot: staging,
+    eligiblePaths: ['src/analyzer.py', 'templates/report_markdown.j2'],
+  });
   assert.equal(result.ok, true);
   assert.equal(await fs.readFile(path.join(result.candidateRoot, 'server.py'), 'utf8'), 'app = object()\n');
   assert.equal(await fs.readFile(path.join(result.candidateRoot, 'src', 'analyzer.py'), 'utf8'), 'VALUE = 2\n');
   assert.equal(await fs.readFile(path.join(result.candidateRoot, 'src', 'keep.py'), 'utf8'), 'KEEP = 1\n');
+  assert.equal(
+    await fs.readFile(path.join(result.candidateRoot, 'templates', 'report_markdown.j2'), 'utf8'),
+    'new template\n',
+  );
 });
 
 test('candidate staging excludes UI and user data and applies safe removals', async () => {

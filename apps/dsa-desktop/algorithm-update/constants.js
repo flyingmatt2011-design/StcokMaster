@@ -1,5 +1,5 @@
 const DEFAULT_POLICY = Object.freeze({
-  eligibleRoots: ['src/', 'data_provider/', 'strategies/', 'api/'],
+  eligibleRoots: ['src/', 'data_provider/', 'strategies/', 'api/', 'templates/'],
   eligibleFiles: ['server.py', 'main.py'],
   dependencyFiles: ['pyproject.toml', 'requirements.txt', 'requirements.lock', 'poetry.lock'],
   uiRoots: ['apps/dsa-web/', 'apps/dsa-desktop/'],

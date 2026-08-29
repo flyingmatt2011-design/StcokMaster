@@ -89,6 +89,10 @@ test('local startup overlays the explicit StockMaster backend files into the act
     path.join('data_provider', 'realtime_types.py'),
     path.join('data_provider', 'akshare_fetcher.py'),
     path.join('data_provider', 'efinance_fetcher.py'),
+    path.join('templates', '_macros.j2'),
+    path.join('templates', 'report_brief.j2'),
+    path.join('templates', 'report_markdown.j2'),
+    path.join('templates', 'report_wechat.j2'),
   ];
   for (const relativePath of adapterFiles) {
     fs.mkdirSync(path.dirname(path.join(repoRoot, relativePath)), { recursive: true });
@@ -175,6 +179,10 @@ test('local backend overlays include split-module runtime dependencies', (t) => 
     'src/services/chart_pattern_service.py',
     'src/services/provider_chain_diagnostics.py',
     'src/services/runtime_config_validation.py',
+    'templates/_macros.j2',
+    'templates/report_brief.j2',
+    'templates/report_markdown.j2',
+    'templates/report_wechat.j2',
   ];
 
   for (const dependency of requiredDependencies) {

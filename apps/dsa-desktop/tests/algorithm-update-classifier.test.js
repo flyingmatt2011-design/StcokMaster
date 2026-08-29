@@ -16,6 +16,15 @@ test('mixed changes exclude UI and dependency-only changes are not offered', () 
   assert.equal(classifyChangedPaths(['pyproject.toml'], DEFAULT_POLICY).kind, 'dependency_only');
 });
 
+test('report templates are synchronized as backend runtime dependencies', () => {
+  const result = classifyChangedPaths([
+    'templates/report_markdown.j2',
+    'apps/dsa-web/src/App.tsx',
+  ], DEFAULT_POLICY);
+  assert.equal(result.kind, 'mixed');
+  assert.deepEqual(result.eligiblePaths, ['templates/report_markdown.j2']);
+});
+
 test('unsafe paths are blocked deterministically', () => {
   const result = classifyChangedPaths(['../secret.py', 'src/tool.exe'], DEFAULT_POLICY);
   assert.equal(result.kind, 'unsafe');

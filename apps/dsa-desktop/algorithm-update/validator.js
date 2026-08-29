@@ -53,6 +53,36 @@ async function validatePythonCandidate({ candidateRoot, changedPaths, pythonPath
   if (pythonFiles.length) {
     await run(pythonPath, ['-X', 'utf8', '-m', 'py_compile', ...pythonFiles], { cwd: root, env: candidateEnv });
   }
+  const templateFiles = (changedPaths || [])
+    .filter((file) => typeof file === 'string')
+    .map((file) => file.replaceAll('\\', '/'))
+    .filter((file) => file.startsWith('templates/') && file.toLowerCase().endsWith('.j2'));
+  const templateNames = [];
+  for (const file of templateFiles) {
+    const templatePath = path.resolve(root, ...file.split('/'));
+    const relative = path.relative(root, templatePath);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Candidate template path escapes runtime');
+    await fs.access(templatePath);
+    templateNames.push(file.slice('templates/'.length));
+  }
+  if (templateNames.length) {
+    await run(
+      pythonPath,
+      [
+        '-X',
+        'utf8',
+        '-c',
+        [
+          'import json, os, sys',
+          'from jinja2 import Environment, FileSystemLoader',
+          'env = Environment(loader=FileSystemLoader(os.path.join(os.getcwd(), "templates")))',
+          '[env.get_template(name) for name in json.loads(sys.argv[1])]',
+        ].join('; '),
+        JSON.stringify(templateNames),
+      ],
+      { cwd: root, env: candidateEnv },
+    );
+  }
   await fs.access(path.join(root, 'main.py'));
   await fs.access(path.join(root, 'server.py'));
   await run(
