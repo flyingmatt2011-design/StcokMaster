@@ -8,6 +8,180 @@ const path = require('node:path');
 
 const POSIX_PATH_DELIMITER = ':';
 
+test('local startup overlays the latest Web UI without replacing the active algorithm runtime', (t) => {
+  const { syncDevelopmentWebAssets } = loadMainModule(t);
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'stockmaster-local-ui-'));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const runtimeRoot = path.join(tempRoot, 'runtime');
+  fs.mkdirSync(path.join(repoRoot, 'static', 'assets'), { recursive: true });
+  fs.mkdirSync(path.join(runtimeRoot, 'static'), { recursive: true });
+  fs.writeFileSync(path.join(repoRoot, 'static', 'index.html'), 'new-ui', 'utf8');
+  fs.writeFileSync(path.join(repoRoot, 'static', 'assets', 'app.js'), 'new-assets', 'utf8');
+  fs.writeFileSync(path.join(runtimeRoot, 'main.py'), 'active-algorithm', 'utf8');
+  fs.writeFileSync(path.join(runtimeRoot, 'static', 'index.html'), 'old-ui', 'utf8');
+
+  assert.equal(syncDevelopmentWebAssets({ repoRoot, runtimeRoot }), true);
+  assert.equal(fs.readFileSync(path.join(runtimeRoot, 'static', 'index.html'), 'utf8'), 'new-ui');
+  assert.equal(fs.readFileSync(path.join(runtimeRoot, 'static', 'assets', 'app.js'), 'utf8'), 'new-assets');
+  assert.equal(fs.readFileSync(path.join(runtimeRoot, 'main.py'), 'utf8'), 'active-algorithm');
+});
+
+test('local startup overlays the explicit StockMaster backend files into the active runtime', (t) => {
+  const { syncDevelopmentBackendAdapters } = loadMainModule(t);
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'stockmaster-local-api-'));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const runtimeRoot = path.join(tempRoot, 'runtime');
+  const adapterFiles = [
+    path.join('api', 'app.py'),
+    path.join('api', 'v1', 'endpoints', 'analysis.py'),
+    path.join('api', 'v1', 'endpoints', 'history.py'),
+    path.join('api', 'v1', 'endpoints', 'stocks.py'),
+    path.join('api', 'v1', 'endpoints', 'system_config.py'),
+    path.join('api', 'v1', 'schemas', 'analysis.py'),
+    path.join('api', 'v1', 'schemas', 'history.py'),
+    path.join('api', 'v1', 'schemas', 'stocks.py'),
+    path.join('api', 'v1', 'schemas', 'system_config.py'),
+    path.join('src', 'services', 'history_service.py'),
+    path.join('src', 'services', 'analysis_service.py'),
+    path.join('src', 'services', 'market_dashboard_service.py'),
+    path.join('src', 'services', 'stock_service.py'),
+    path.join('src', 'services', 'system_config_service.py'),
+    path.join('main.py'),
+    path.join('src', 'core', 'pipeline.py'),
+    path.join('src', 'core', 'config_profiles.py'),
+    path.join('src', 'core', 'pipeline_helpers.py'),
+    path.join('src', 'core', 'config_registry.py'),
+    path.join('src', 'core', 'config_registry_categories.py'),
+    path.join('src', 'core', 'market_review.py'),
+    path.join('src', 'core', 'market_review_runtime.py'),
+    path.join('src', 'core', 'trading_calendar.py'),
+    path.join('src', 'config.py'),
+    path.join('src', 'analyzer.py'),
+    path.join('src', 'analysis_text_normalization.py'),
+    path.join('src', 'market_analyzer.py'),
+    path.join('src', 'storage.py'),
+    path.join('src', 'storage_time.py'),
+    path.join('src', 'search_service.py'),
+    path.join('src', 'search_provider_base.py'),
+    path.join('src', 'utils', 'data_processing.py'),
+    path.join('src', 'services', 'analysis_context_builder.py'),
+    path.join('src', 'services', 'analysis_retry_context.py'),
+    path.join('src', 'services', 'a_share_market_temperature.py'),
+    path.join('src', 'services', 'a_share_structured_intel.py'),
+    path.join('src', 'services', 'chart_pattern_service.py'),
+    path.join('src', 'services', 'intel_context_status.py'),
+    path.join('src', 'services', 'provider_chain_diagnostics.py'),
+    path.join('src', 'services', 'runtime_config_validation.py'),
+    path.join('src', 'services', 'run_diagnostics.py'),
+    path.join('src', 'services', 'task_queue.py'),
+    path.join('src', 'stock_analyzer.py'),
+    path.join('src', 'llm', 'backend_factory.py'),
+    path.join('src', 'llm', 'litellm_backend.py'),
+    path.join('data_provider', 'base.py'),
+    path.join('data_provider', 'baostock_fetcher.py'),
+    path.join('data_provider', 'a_share_valuation.py'),
+    path.join('data_provider', 'baostock_fundamental_adapter.py'),
+    path.join('data_provider', 'chip_distribution.py'),
+    path.join('data_provider', 'fundamental_adapter.py'),
+    path.join('data_provider', 'provider_daily_cache.py'),
+    path.join('data_provider', 'realtime_types.py'),
+    path.join('data_provider', 'akshare_fetcher.py'),
+    path.join('data_provider', 'efinance_fetcher.py'),
+  ];
+  for (const relativePath of adapterFiles) {
+    fs.mkdirSync(path.dirname(path.join(repoRoot, relativePath)), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, relativePath), `local:${relativePath}`, 'utf8');
+  }
+  fs.mkdirSync(runtimeRoot, { recursive: true });
+  fs.writeFileSync(path.join(runtimeRoot, 'main.py'), 'active-algorithm', 'utf8');
+
+  assert.equal(syncDevelopmentBackendAdapters({ repoRoot, runtimeRoot }), true);
+  for (const relativePath of adapterFiles) {
+    assert.equal(fs.readFileSync(path.join(runtimeRoot, relativePath), 'utf8'), `local:${relativePath}`);
+  }
+  assert.equal(fs.readFileSync(path.join(runtimeRoot, 'main.py'), 'utf8'), `local:${path.join('main.py')}`);
+});
+
+test('local startup replays StockMaster files with the persisted three-way merge policy', async (t) => {
+  const {
+    replayDevelopmentBackendAdapters,
+    STOCKMASTER_BACKEND_ADAPTER_FILES,
+  } = loadMainModule(t);
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'stockmaster-local-replay-'));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const runtimeRoot = path.join(tempRoot, 'runtime');
+  const mergeRoot = path.join(runtimeRoot, '.stockmaster-merge');
+  const changedFile = path.join('src', 'config.py');
+
+  for (const relativePath of STOCKMASTER_BACKEND_ADAPTER_FILES) {
+    const sourcePath = path.join(repoRoot, relativePath);
+    fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+    fs.writeFileSync(
+      sourcePath,
+      relativePath === changedFile
+        ? 'local = true\nseparator_one = 1\nseparator_two = 2\nupstream = false\n'
+        : `local:${relativePath}`,
+      'utf8',
+    );
+  }
+  fs.mkdirSync(path.join(runtimeRoot, 'src'), { recursive: true });
+  fs.mkdirSync(path.join(mergeRoot, 'baseline', 'src'), { recursive: true });
+  fs.mkdirSync(path.join(mergeRoot, 'upstream', 'src'), { recursive: true });
+  fs.writeFileSync(path.join(mergeRoot, 'baseline', changedFile), 'local = false\nseparator_one = 1\nseparator_two = 2\nupstream = false\n', 'utf8');
+  fs.writeFileSync(path.join(mergeRoot, 'upstream', changedFile), 'local = false\nseparator_one = 1\nseparator_two = 2\nupstream = true\n', 'utf8');
+  fs.writeFileSync(path.join(runtimeRoot, 'stockmaster-candidate.json'), JSON.stringify({
+    mergeSummary: { policy: 'three-way-local-wins' },
+    localChangeStatuses: { 'src/config.py': 'modified' },
+  }), 'utf8');
+
+  const result = await replayDevelopmentBackendAdapters({ repoRoot, runtimeRoot });
+
+  assert.equal(result.strategy, 'three-way-local-wins');
+  assert.equal(
+    fs.readFileSync(path.join(runtimeRoot, changedFile), 'utf8'),
+    'local = true\nseparator_one = 1\nseparator_two = 2\nupstream = true\n',
+  );
+  assert.deepEqual(result.summary.conflictPaths, []);
+});
+
+test('local backend overlays include split-module runtime dependencies', (t) => {
+  const { STOCKMASTER_BACKEND_ADAPTER_FILES } = loadMainModule(t);
+  const normalizedFiles = new Set(
+    STOCKMASTER_BACKEND_ADAPTER_FILES.map((filePath) => filePath.split(path.sep).join('/')),
+  );
+  const requiredDependencies = [
+    'api/v1/endpoints/analysis.py',
+    'api/v1/endpoints/stocks.py',
+    'api/v1/schemas/analysis.py',
+    'api/v1/schemas/stocks.py',
+    'data_provider/a_share_valuation.py',
+    'data_provider/baostock_fetcher.py',
+    'data_provider/chip_distribution.py',
+    'main.py',
+    'src/core/config_profiles.py',
+    'src/core/config_registry_categories.py',
+    'src/core/market_review_runtime.py',
+    'src/core/trading_calendar.py',
+    'src/services/run_diagnostics.py',
+    'src/services/market_dashboard_service.py',
+    'src/services/stock_service.py',
+    'src/services/task_queue.py',
+    'src/stock_analyzer.py',
+    'src/services/a_share_market_temperature.py',
+    'src/services/a_share_structured_intel.py',
+    'src/services/chart_pattern_service.py',
+    'src/services/provider_chain_diagnostics.py',
+    'src/services/runtime_config_validation.py',
+  ];
+
+  for (const dependency of requiredDependencies) {
+    assert.equal(normalizedFiles.has(dependency), true, `missing runtime dependency: ${dependency}`);
+  }
+});
+
 function loadMainModule(t, options = {}) {
   const originalLoad = Module._load;
   const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
@@ -332,6 +506,8 @@ test('buildBackendEnvironment extends macOS GUI PATH with Homebrew CLI directori
   assert.equal(env.DSA_DESKTOP_MODE, 'true');
   assert.equal(env.ENV_FILE, '/tmp/dsa/.env');
   assert.equal(env.DATABASE_PATH, '/tmp/dsa/data.db');
+  assert.equal(env.STOCKMASTER_TASK_STATE_PATH.replaceAll('\\', '/'), '/tmp/dsa/unfinished-analysis-tasks.json');
+  assert.equal(env.STOCKMASTER_SHARED_FETCHER_CACHE, 'true');
   assert.equal(env.LOG_DIR, '/tmp/dsa/logs');
   assert.equal(env.WEBUI_HOST, '127.0.0.1');
 });
@@ -1338,6 +1514,8 @@ test('createWindow startup path does not throw ReferenceError after restore resu
   const uninstallPath = path.join(appDir, 'Uninstall Daily Stock Analysis.exe');
   const loadedFiles = [];
   const loadedUrls = [];
+  let browserWindowOptions;
+  let menuRemoved = false;
   let startupError;
   let updateCheckRequested = false;
   const originalResourcesPathDescriptor = Object.getOwnPropertyDescriptor(process, 'resourcesPath');
@@ -1345,9 +1523,13 @@ test('createWindow startup path does not throw ReferenceError after restore resu
   const backupRoot = path.join(userDataDir, '.dsa-desktop-update-backup');
   const manifestPath = path.join(backupRoot, 'runtime-state.json');
 
-  function fakeBrowserWindow() {
+  function fakeBrowserWindow(options) {
+    browserWindowOptions = options;
     return {
       isDestroyed: () => false,
+      removeMenu: () => {
+        menuRemoved = true;
+      },
       setBackgroundColor: () => undefined,
       once: () => undefined,
       webContents: {
@@ -1477,11 +1659,13 @@ test('createWindow startup path does not throw ReferenceError after restore resu
 
   assert.equal(loadedFiles.length >= 1, true);
   assert.equal(loadedUrls.length >= 1, true);
+  assert.equal(browserWindowOptions.autoHideMenuBar, true);
+  assert.equal(menuRemoved, true);
   assert.match(
     loadedUrls[0],
     /^http:\/\/127\.0\.0\.1:\d+\/\?desktop_version=3\.12\.0&cache_bust=\d+$/
   );
-  assert.equal(updateCheckRequested, true);
+  assert.equal(updateCheckRequested, false);
   assert.equal(startupError, undefined);
   assert.equal(fs.existsSync(backupRoot), false);
   const updateState = await mainModule.__getIpcMainHandler('desktop:get-update-state')();

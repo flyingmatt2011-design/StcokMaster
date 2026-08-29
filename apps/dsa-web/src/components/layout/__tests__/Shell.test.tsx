@@ -35,6 +35,23 @@ beforeAll(() => {
 });
 
 describe('Shell', () => {
+  it('uses the StockMaster visual shell instead of the upstream dashboard shell', () => {
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <ThemeProvider>
+          <Shell>
+            <div>page content</div>
+          </Shell>
+        </ThemeProvider>
+      </MemoryRouter>
+    );
+
+    expect(screen.getByTestId('stockmaster-shell')).toHaveClass('stockmaster-shell');
+    expect(screen.getByTestId('stockmaster-shell')).toHaveClass('bg-[var(--sm-canvas)]');
+    expect(screen.getByTestId('stockmaster-sidebar')).toHaveClass('w-14');
+    expect(screen.getByTestId('stockmaster-sidebar')).toHaveClass('bg-[var(--sm-rail-bg)]');
+  });
+
   it.skip('renders navigation, theme toggle and completion badge', () => {
     render(
       <MemoryRouter initialEntries={['/chat']}>

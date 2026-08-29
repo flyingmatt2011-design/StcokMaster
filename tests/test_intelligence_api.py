@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from api.app import create_app
 from src.config import Config
+from src.services import intelligence_service as intelligence_service_module
 from src.storage import DatabaseManager
 
 RSS_FIXTURE = b'<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0"><channel><item><title>Market event</title><link>https://news.example.com/market-event</link><description>Evidence summary</description></item></channel></rss>'
@@ -64,7 +65,7 @@ class IntelligenceApiTestCase(unittest.TestCase):
         create_resp = self.client.post("/api/v1/intelligence/sources", json={"name": "api-feed", "url": "https://feeds.example.com/rss.xml", "source_type": "rss", "scope_type": "market", "market": "cn"})
         self.assertEqual(create_resp.status_code, 200)
         source_id = create_resp.json()["id"]
-        with patch("src.services.intelligence_service.requests.get", return_value=self._mock_response()):
+        with patch.object(intelligence_service_module, "_http_get", return_value=self._mock_response()):
             fetch_resp = self.client.post(f"/api/v1/intelligence/sources/{source_id}/fetch")
         self.assertEqual(fetch_resp.status_code, 200)
         self.assertEqual(fetch_resp.json()["saved_count"], 1)
@@ -170,8 +171,9 @@ class IntelligenceApiTestCase(unittest.TestCase):
             ("test", lambda: self.client.post("/api/v1/intelligence/sources/test", json=payload)),
             ("fetch", lambda: self.client.post(f"/api/v1/intelligence/sources/{source_id}/fetch")),
         ]
-        with patch(
-            "src.services.intelligence_service.requests.get",
+        with patch.object(
+            intelligence_service_module,
+            "_http_get",
             side_effect=lambda url, **_kwargs: self._mock_http_error_response(url),
         ):
             for endpoint, send_request in requests_to_check:
@@ -203,8 +205,9 @@ class IntelligenceApiTestCase(unittest.TestCase):
             ("test", lambda: self.client.post("/api/v1/intelligence/sources/test", json=payload)),
             ("fetch", lambda: self.client.post(f"/api/v1/intelligence/sources/{source_id}/fetch")),
         ]
-        with patch(
-            "src.services.intelligence_service.requests.get",
+        with patch.object(
+            intelligence_service_module,
+            "_http_get",
             side_effect=lambda url, **_kwargs: self._mock_http_error_response(url),
         ):
             for endpoint, send_request in requests_to_check:

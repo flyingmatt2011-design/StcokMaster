@@ -15,7 +15,7 @@ type ShellProps = {
 
 export const Shell: React.FC<ShellProps> = ({ children }) => {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const collapsed = false;
+  const collapsed = true;
   const { t } = useUiLanguage();
 
   useEffect(() => {
@@ -36,7 +36,7 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
   }, [mobileOpen]);
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div data-testid="stockmaster-shell" className="stockmaster-shell sm-reference-shell min-h-screen bg-[var(--sm-canvas)] text-foreground">
       <div className="pointer-events-none fixed inset-x-0 top-3 z-40 flex items-start justify-between px-3 lg:hidden">
         <button
           type="button"
@@ -52,19 +52,21 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
         </div>
       </div>
 
-      <div className="mx-auto flex min-h-screen w-full max-w-[1680px] px-3 py-3 sm:px-4 sm:py-4 lg:px-5">
+      <div className="sm-reference-frame flex min-h-screen w-full">
         <aside
+          data-testid="stockmaster-sidebar"
           className={cn(
-            'sticky top-3 z-40 hidden shrink-0 overflow-visible rounded-[1.5rem] border border-[var(--shell-sidebar-border)] bg-card/72 p-2.5 shadow-soft-card backdrop-blur-sm transition-[width] duration-200 lg:flex',
-            'max-h-[calc(100vh-1.5rem)] self-start sm:top-4 sm:max-h-[calc(100vh-2rem)]',
-            collapsed ? 'w-[64px]' : 'w-[136px]'
+            'stockmaster-sidebar sm-reference-rail sticky top-0 z-40 hidden w-14 min-w-0 shrink-0 overflow-visible border-r border-[var(--sm-rail-border)] bg-[var(--sm-rail-bg)] p-2 transition-[width] duration-200 lg:flex',
+            'h-screen max-h-screen self-start',
+            collapsed ? 'w-14' : 'w-[220px]'
           )}
+          style={!collapsed ? { width: 'var(--sm-rail-width)' } : undefined}
           aria-label={t('layout.desktopSidebar')}
         >
           <SidebarNav collapsed={collapsed} variant="rail" onNavigate={() => setMobileOpen(false)} />
         </aside>
 
-        <main className="min-h-0 min-w-0 flex-1 pt-14 lg:pl-3 lg:pt-0 touch-pan-y">
+        <main className="sm-reference-main min-h-0 min-w-0 flex-1 pt-14 lg:pt-0 touch-pan-y">
           {children ?? <Outlet />}
         </main>
       </div>

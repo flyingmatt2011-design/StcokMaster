@@ -14,7 +14,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -47,6 +47,7 @@ from src.storage import (
     DecisionSignalRecord,
 )
 from src.analyzer import AnalysisResult
+from src.search_service import SearchResponse, SearchResult
 from src.daily_market_context_guardrail import apply_daily_market_context_guardrail
 from src.services.history_service import HistoryService
 import src.auth as auth
@@ -269,6 +270,75 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                 self.fail("未找到保存的历史记录")
             self.assertEqual(row.id, saved)
             return row.id
+
+    def test_report_news_excludes_old_unknown_and_other_stock_items(self) -> None:
+        query_id = "query_recent_report_news"
+        record_id = self._save_history(query_id)
+        today = datetime.now().date()
+        response = SearchResponse(
+            query="贵州茅台 最新消息",
+            provider="mock-search",
+            success=True,
+            results=[
+                SearchResult(
+                    title="近两日公司公告",
+                    snippet="有效的新消息",
+                    url="https://example.com/fresh",
+                    source="example.com",
+                    published_date=(today - timedelta(days=1)).isoformat(),
+                ),
+                SearchResult(
+                    title="数月前旧闻",
+                    snippet="不应出现在报告资讯区",
+                    url="https://example.com/old",
+                    source="example.com",
+                    published_date=(today - timedelta(days=90)).isoformat(),
+                ),
+                SearchResult(
+                    title="发布日期未知",
+                    snippet="无法确认时效",
+                    url="https://example.com/unknown",
+                    source="example.com",
+                    published_date=None,
+                ),
+            ],
+        )
+        self.db.save_news_intel(
+            code="600519",
+            name="贵州茅台",
+            dimension="latest_news",
+            query=response.query,
+            response=response,
+            query_context={"query_id": query_id},
+        )
+        self.db.save_news_intel(
+            code="000001",
+            name="平安银行",
+            dimension="latest_news",
+            query="平安银行 最新消息",
+            response=SearchResponse(
+                query="平安银行 最新消息",
+                provider="mock-search",
+                success=True,
+                results=[
+                    SearchResult(
+                        title="同批次其他股票新闻",
+                        snippet="不应串入贵州茅台报告",
+                        url="https://example.com/other-stock",
+                        source="example.com",
+                        published_date=today.isoformat(),
+                    )
+                ],
+            ),
+            query_context={"query_id": query_id},
+        )
+
+        items = HistoryService(self.db).resolve_and_get_news(str(record_id), limit=20)
+
+        self.assertEqual([item["title"] for item in items], ["近两日公司公告"])
+        self.assertEqual(items[0]["published_date"], (today - timedelta(days=1)).isoformat())
+        self.assertEqual(items[0]["source"], "example.com")
+        self.assertEqual(items[0]["dimension"], "latest_news")
 
     def test_save_analysis_history_with_snapshot(self) -> None:
         """保存历史记录并写入上下文快照"""
@@ -925,6 +995,48 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(response.items[0].operation_advice, "Hold")
         self.assertEqual(response.items[0].action, "buy")
         self.assertEqual(response.items[0].action_label, "Buy")
+
+    def test_stock_bar_item_exposes_latest_strategy_points_and_ma5_bias(self) -> None:
+        if get_stock_bar is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        result = self._build_result()
+        result.current_price = 1428.0
+        result.change_pct = 0.75
+        result.dashboard = {
+            "battle_plan": {
+                "sniper_points": {
+                    "ideal_buy": "理想买入点：1420.50 元附近",
+                    "stop_loss": "跌破 1368.00 元止损",
+                },
+            },
+            "data_perspective": {
+                "price_position": {"bias_ma5": -2.35},
+            },
+        }
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_stock_bar_strategy_metrics",
+            report_type="detailed",
+            news_content="个股正文",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertGreater(saved, 0)
+
+        response = get_stock_bar(
+            start_date=None,
+            end_date=None,
+            limit=10,
+            db_manager=self.db,
+        )
+
+        item = response.items[0]
+        self.assertEqual(item.current_price, 1428.0)
+        self.assertEqual(item.change_pct, 0.75)
+        self.assertEqual(item.ideal_buy, "理想买入点：1420.50 元附近")
+        self.assertEqual(item.stop_loss, "跌破 1368.00 元止损")
+        self.assertEqual(item.bias_ma5, -2.35)
 
     def test_history_detail_uses_service_resolved_action_fields(self) -> None:
         if get_history_detail is None:

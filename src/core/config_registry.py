@@ -14,61 +14,13 @@ from src.config import (
     AGENT_CONTEXT_COMPRESSION_PROFILES,
     AGENT_MAX_STEPS_DEFAULT,
 )
+from src.core.config_registry_categories import CATEGORY_DEFINITIONS
 from src.notification_noise import NOTIFICATION_SEVERITIES
 from src.notification_routing import ROUTABLE_NOTIFICATION_CHANNELS
 
 SCHEMA_VERSION = "2026-06-29-claude-code-cli-backend"
 
-_CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
-    {
-        "category": "base",
-        "title": "Base Settings",
-        "description": "Watchlist and foundational application settings.",
-        "display_order": 10,
-    },
-    {
-        "category": "ai_model",
-        "title": "AI Model",
-        "description": "Model providers, model names, and inference parameters.",
-        "display_order": 20,
-    },
-    {
-        "category": "data_source",
-        "title": "Data Source",
-        "description": "Market data provider credentials and priority settings.",
-        "display_order": 30,
-    },
-    {
-        "category": "notification",
-        "title": "Notification",
-        "description": "Bot, webhook, and push channel related settings.",
-        "display_order": 40,
-    },
-    {
-        "category": "system",
-        "title": "System",
-        "description": "Runtime and scheduling controls.",
-        "display_order": 50,
-    },
-    {
-        "category": "agent",
-        "title": "Agent",
-        "description": "Agent mode and strategy-skill settings.",
-        "display_order": 55,
-    },
-    {
-        "category": "backtest",
-        "title": "Backtest",
-        "description": "Backtest engine behavior and evaluation parameters.",
-        "display_order": 60,
-    },
-    {
-        "category": "uncategorized",
-        "title": "Uncategorized",
-        "description": "Keys not mapped in the field registry.",
-        "display_order": 99,
-    },
-]
+_CATEGORY_DEFINITIONS = CATEGORY_DEFINITIONS
 
 WEB_SETTINGS_HIDDEN_FROM_UI = {
     "DATABASE_PATH",
@@ -251,7 +203,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "GENERATION_BACKEND_MAX_CONCURRENCY": {
         "title": "Generation Backend Max Concurrency",
-        "description": "Global generation backend concurrency cap. Local CLI effective concurrency also respects LOCAL_CLI_BACKEND_MAX_CONCURRENCY.",
+        "description": "Process-wide model generation concurrency cap for LiteLLM and local CLI backends. Data and news preparation can still run in parallel.",
         "category": "ai_model",
         "data_type": "integer",
         "ui_control": "number",
@@ -1102,14 +1054,14 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "SEARXNG_PUBLIC_INSTANCES_ENABLED": {
         "title": "SearXNG Public Instances",
-        "description": "Auto-discover public SearXNG instances from searx.space when SEARXNG_BASE_URLS is empty. Default: true; set false to disable.",
+        "description": "Auto-discover public SearXNG instances from searx.space when SEARXNG_BASE_URLS is empty. Default: false because public instances are often rate-limited.",
         "category": "data_source",
         "data_type": "boolean",
         "ui_control": "switch",
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "true",
+        "default_value": "false",
         "options": [],
         "validation": {},
         "display_order": 53,
@@ -2995,6 +2947,31 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             },
         ],
         "warning_codes": ["reserved_flag"],
+    },
+    "CONFIG_VALIDATE_MODE": {
+        "title": "Startup Config Validation",
+        "description": "warn logs structured issues and continues; strict stops startup when error-level issues exist.",
+        "category": "system",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "warn",
+        "options": ["warn", "strict"],
+        "validation": {"enum": ["warn", "strict"]},
+        "display_order": 1,
+        "help_key": "settings.system.CONFIG_VALIDATE_MODE",
+        "examples": [
+            "CONFIG_VALIDATE_MODE=warn",
+            "CONFIG_VALIDATE_MODE=strict",
+        ],
+        "docs": [
+            {
+                "label": "完整配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md",
+            },
+        ],
     },
     "SCHEDULE_TIME": {
         "title": "Schedule Time",

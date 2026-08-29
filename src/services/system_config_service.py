@@ -222,6 +222,13 @@ class SystemConfigService:
         "slack",
         "astrbot",
     )
+    _SEARCH_TEST_KEY_MAP: Dict[str, str] = {
+        "bocha": "BOCHA_API_KEYS",
+        "tavily": "TAVILY_API_KEYS",
+        "brave": "BRAVE_API_KEYS",
+        "serpapi": "SERPAPI_API_KEYS",
+        "searxng": "SEARXNG_BASE_URLS",
+    }
     _NOTIFICATION_TEST_KEY_MAP: Dict[str, Tuple[str, str]] = {
         "WECHAT_WEBHOOK_URL": ("wechat_webhook_url", "string"),
         "WECHAT_MSG_TYPE": ("wechat_msg_type", "string"),
@@ -512,6 +519,158 @@ class SystemConfigService:
             "valid": valid,
             "issues": issues,
         }
+
+    def test_search_provider(
+        self,
+        *,
+        provider: str,
+        items: Sequence[Dict[str, str]],
+        mask_token: str = "******",
+        query: str = "贵州茅台 600519 最新公告",
+    ) -> Dict[str, Any]:
+        """Run one provider-level news search without persisting draft values."""
+        normalized_provider = (provider or "").strip().lower()
+        config_key = self._SEARCH_TEST_KEY_MAP.get(normalized_provider)
+        if config_key is None:
+            raise ValueError(f"Unsupported search provider: {provider}")
+
+        effective_map = self._build_search_test_effective_map(
+            items=items,
+            mask_token=mask_token,
+        )
+        values = self._split_csv(effective_map.get(config_key, ""))
+        if not values:
+            field_name = "SearXNG 自建实例地址" if normalized_provider == "searxng" else f"{normalized_provider.title()} API Key"
+            return {
+                "success": False,
+                "provider": normalized_provider,
+                "message": f"尚未配置 {field_name}",
+                "result_count": 0,
+                "error_code": "config_missing",
+                "retryable": False,
+                "latency_ms": None,
+            }
+
+        from src.search_service import (
+            BochaSearchProvider,
+            BraveSearchProvider,
+            SearXNGSearchProvider,
+            SerpAPISearchProvider,
+            TavilySearchProvider,
+        )
+
+        provider_factories = {
+            "bocha": lambda: BochaSearchProvider(values),
+            "tavily": lambda: TavilySearchProvider(values),
+            "brave": lambda: BraveSearchProvider(values),
+            "serpapi": lambda: SerpAPISearchProvider(values),
+            "searxng": lambda: SearXNGSearchProvider(values, use_public_instances=False),
+        }
+        started_at = time.monotonic()
+        try:
+            response = provider_factories[normalized_provider]().search(
+                query.strip(),
+                max_results=3,
+                days=7,
+            )
+        except Exception as exc:
+            latency_ms = int((time.monotonic() - started_at) * 1000)
+            error_code, retryable = self._classify_search_test_error(str(exc))
+            logger.warning("Search provider test failed for %s: %s", normalized_provider, exc)
+            return {
+                "success": False,
+                "provider": normalized_provider,
+                "message": self._search_test_failure_message(error_code),
+                "result_count": 0,
+                "error_code": error_code,
+                "retryable": retryable,
+                "latency_ms": latency_ms,
+            }
+
+        latency_ms = int((time.monotonic() - started_at) * 1000)
+        result_count = len(response.results or [])
+        if response.success:
+            suffix = f"，返回 {result_count} 条结果" if result_count else "，测试查询暂未返回结果"
+            return {
+                "success": True,
+                "provider": normalized_provider,
+                "message": f"连接成功{suffix}",
+                "result_count": result_count,
+                "error_code": None,
+                "retryable": False,
+                "latency_ms": latency_ms,
+            }
+
+        error_code, retryable = self._classify_search_test_error(response.error_message or "")
+        return {
+            "success": False,
+            "provider": normalized_provider,
+            "message": self._search_test_failure_message(error_code),
+            "result_count": 0,
+            "error_code": error_code,
+            "retryable": retryable,
+            "latency_ms": latency_ms,
+        }
+
+    def _build_search_test_effective_map(
+        self,
+        *,
+        items: Sequence[Dict[str, str]],
+        mask_token: str,
+    ) -> Dict[str, str]:
+        """Merge saved/runtime search settings with an unsaved settings draft."""
+        allowed_keys = set(self._SEARCH_TEST_KEY_MAP.values())
+        effective = {
+            key: value
+            for key, value in self._build_display_config_map(self._manager.read_config_map()).items()
+            if key in allowed_keys
+        }
+        for raw_key, raw_value in os.environ.items():
+            key = str(raw_key).upper()
+            if key in allowed_keys:
+                effective[key] = "" if raw_value is None else str(raw_value)
+        for item in items:
+            key = str(item.get("key", "")).strip().upper()
+            if key not in allowed_keys:
+                continue
+            value = "" if item.get("value") is None else str(item.get("value"))
+            if value == mask_token:
+                continue
+            effective[key] = value
+        return effective
+
+    @staticmethod
+    def _classify_search_test_error(message: str) -> Tuple[str, bool]:
+        normalized = (message or "").lower()
+        if any(token in normalized for token in ("timeout", "timed out", "超时")):
+            return "timeout", True
+        if any(token in normalized for token in ("429", "rate limit", "too many requests", "频繁")):
+            return "rate_limited", True
+        if any(token in normalized for token in ("quota", "余额", "配额", "insufficient balance", "402")):
+            return "quota_exhausted", False
+        if any(token in normalized for token in ("401", "unauthorized", "invalid api key", "invalid key", "鉴权")):
+            return "auth_failed", False
+        if any(token in normalized for token in ("403", "forbidden", "permission", "拒绝")):
+            return "permission_denied", False
+        if any(token in normalized for token in ("connection", "network", "dns", "ssl", "网络")):
+            return "network_error", True
+        if any(token in normalized for token in ("json", "format", "格式")):
+            return "invalid_response", True
+        return "provider_error", True
+
+    @staticmethod
+    def _search_test_failure_message(error_code: str) -> str:
+        messages = {
+            "timeout": "连接超时，请稍后重试或检查网络",
+            "rate_limited": "服务限流，请稍后重试",
+            "quota_exhausted": "API 额度不足，请检查账户配额",
+            "auth_failed": "API Key 无效或鉴权失败",
+            "permission_denied": "服务拒绝访问，请检查权限或实例配置",
+            "network_error": "网络连接失败，请检查网络或服务地址",
+            "invalid_response": "服务响应格式异常",
+            "provider_error": "搜索服务暂时不可用",
+        }
+        return messages.get(error_code, messages["provider_error"])
 
     def test_notification_channel(
         self,

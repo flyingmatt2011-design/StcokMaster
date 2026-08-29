@@ -120,6 +120,12 @@ logger = logging.getLogger(__name__)
 EASTMONEY_HISTORY_ENDPOINT = "push2his.eastmoney.com/api/qt/stock/kline/get"
 
 
+def _efinance_volume_to_shares(value: Any) -> int:
+    """Convert efinance/EastMoney A-share volume from lots to shares."""
+    lots = safe_int(value, 0) or 0
+    return lots * 100
+
+
 # User-Agent 池，用于随机轮换
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -605,6 +611,11 @@ class EfinanceFetcher(BaseFetcher):
         # Fill volume and amount if missing
         if 'volume' not in df.columns:
             df['volume'] = 0
+        else:
+            # efinance 的 A 股/ETF 日线成交量口径为“手”，而 StockMaster
+            # 内部以及腾讯等实时源统一使用“股”。不换算会把历史均量缩小
+            # 100 倍，导致盘中量比和量价判断出现虚假的百倍放量。
+            df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0) * 100
         if 'amount' not in df.columns:
             df['amount'] = 0
 
@@ -713,7 +724,7 @@ class EfinanceFetcher(BaseFetcher):
                 price=safe_float(row.get(price_col)),
                 change_pct=safe_float(row.get(pct_col)),
                 change_amount=safe_float(row.get(chg_col)),
-                volume=safe_int(row.get(vol_col)),
+                volume=_efinance_volume_to_shares(row.get(vol_col)),
                 amount=safe_float(row.get(amt_col)),
                 turnover_rate=safe_float(row.get(turn_col)),
                 amplitude=safe_float(row.get(amp_col)),
@@ -814,7 +825,7 @@ class EfinanceFetcher(BaseFetcher):
                 price=safe_float(row.get(price_col)),
                 change_pct=safe_float(row.get(pct_col)),
                 change_amount=safe_float(row.get(chg_col)),
-                volume=safe_int(row.get(vol_col)),
+                volume=_efinance_volume_to_shares(row.get(vol_col)),
                 amount=safe_float(row.get(amt_col)),
                 turnover_rate=safe_float(row.get(turn_col)),
                 amplitude=safe_float(row.get(amp_col)),
@@ -906,7 +917,7 @@ class EfinanceFetcher(BaseFetcher):
                     'high': safe_float(item.get(high_col, 0)),
                     'low': safe_float(item.get(low_col, 0)),
                     'prev_close': current - change_amount if current or change_amount else 0,
-                    'volume': safe_float(item.get(vol_col, 0)),
+                    'volume': float(_efinance_volume_to_shares(item.get(vol_col, 0))),
                     'amount': safe_float(item.get(amt_col, 0)),
                     'amplitude': safe_float(item.get(amp_col, 0)),
                 })
@@ -918,7 +929,7 @@ class EfinanceFetcher(BaseFetcher):
             logger.error(f"[efinance] 获取指数行情失败: {e}")
             return None
 
-    def get_market_stats(self) -> Optional[Dict[str, Any]]:
+    def get_market_stats(self, *, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
         """
         获取市场涨跌统计 (efinance)
         """
@@ -930,6 +941,7 @@ class EfinanceFetcher(BaseFetcher):
 
             current_time = time.time()
             if (
+                not force_refresh and
                 _realtime_cache['data'] is not None and
                 current_time - _realtime_cache['timestamp'] < _realtime_cache['ttl']
             ):

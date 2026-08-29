@@ -2,16 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { analysisApi } from '../analysis';
 
 const post = vi.hoisted(() => vi.fn());
+const get = vi.hoisted(() => vi.fn());
 
 vi.mock('../index', () => ({
   default: {
-    get: vi.fn(),
+    get,
     post,
   },
 }));
 
 describe('analysisApi.triggerMarketReview', () => {
   beforeEach(() => {
+    get.mockReset();
     post.mockReset();
     post.mockResolvedValue({
       status: 202,
@@ -54,5 +56,32 @@ describe('analysisApi.triggerMarketReview', () => {
       },
       expect.any(Object),
     );
+  });
+});
+
+describe('analysisApi.getMarketSnapshot', () => {
+  beforeEach(() => {
+    get.mockReset();
+    get.mockResolvedValue({
+      data: {
+        payload: { indices: [{ code: '000001', name: '上证指数' }] },
+        refreshed_at: '2026-08-26T09:35:00+08:00',
+        mode: 'market_data_only',
+        uses_llm: false,
+      },
+    });
+  });
+
+  it('uses the data-only dashboard endpoint and maps response fields', async () => {
+    const result = await analysisApi.getMarketSnapshot('cn');
+
+    expect(get).toHaveBeenCalledWith('/api/v1/analysis/market-snapshot', {
+      params: { region: 'cn' },
+    });
+    expect(result).toMatchObject({
+      refreshedAt: '2026-08-26T09:35:00+08:00',
+      mode: 'market_data_only',
+      usesLlm: false,
+    });
   });
 });

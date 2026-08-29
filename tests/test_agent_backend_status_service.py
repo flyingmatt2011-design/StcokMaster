@@ -31,6 +31,16 @@ _PROTOCOL_SCHEMAS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _treat_protocol_contract_tests_as_non_windows(monkeypatch, request):
+    """Keep protocol-unit tests deterministic; native Windows has its own contract test."""
+    if request.node.name != "test_native_windows_is_rejected_before_command_probe":
+        monkeypatch.setattr(
+            "src.services.agent_backend_status_service.is_native_windows",
+            lambda: False,
+        )
+
+
 def _write_protocol_schemas(schema_dir: Path, *, missing: str | None = None) -> None:
     for relative_path, payload in _PROTOCOL_SCHEMAS.items():
         path = schema_dir / relative_path

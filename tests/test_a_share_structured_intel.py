@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from src.search_service import SearchResponse, SearchResult
+from src.search_provider_base import SearchResponse, SearchResult
 from src.services.a_share_structured_intel import AShareStructuredIntelService, _date_text
 
 

@@ -75,7 +75,7 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({ strategy, langua
         title={text.sniperLevels}
         className="mb-3"
       />
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="stockmaster-strategy-grid grid grid-cols-2 gap-3 xl:grid-cols-4">
         {strategyItems.map((item) => (
           <StrategyItem key={item.label} {...item} />
         ))}

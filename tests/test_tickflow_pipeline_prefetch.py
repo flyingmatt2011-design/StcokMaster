@@ -5,7 +5,7 @@ import os
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -15,6 +15,7 @@ ensure_litellm_stub()
 
 from src.analyzer import AnalysisResult
 from src.core.pipeline import StockAnalysisPipeline
+from src.core import pipeline as pipeline_module
 
 
 def _make_result(code: str) -> AnalysisResult:
@@ -47,6 +48,21 @@ class _TrackingFetcherManager:
 
 
 class TestTickFlowPipelinePrefetch(unittest.TestCase):
+    def test_desktop_runtime_reuses_thread_safe_fetcher_cache(self):
+        manager = object()
+        previous = pipeline_module._shared_fetcher_manager
+        pipeline_module._shared_fetcher_manager = None
+        try:
+            with patch.dict(os.environ, {"STOCKMASTER_SHARED_FETCHER_CACHE": "true"}), \
+                 patch.object(pipeline_module, "DataFetcherManager", return_value=manager) as manager_cls:
+                first = pipeline_module._get_runtime_fetcher_manager()
+                second = pipeline_module._get_runtime_fetcher_manager()
+            self.assertIs(first, manager)
+            self.assertIs(second, manager)
+            manager_cls.assert_called_once_with()
+        finally:
+            pipeline_module._shared_fetcher_manager = previous
+
     def test_run_prefetches_daily_klines_before_realtime_and_stock_processing(self):
         events = []
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)

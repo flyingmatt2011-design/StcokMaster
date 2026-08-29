@@ -409,6 +409,61 @@ def infer_market_phase(
         return MarketPhase.UNKNOWN
 
 
+def get_next_quote_refresh_transition(
+    market: str,
+    current_time: Optional[datetime] = None,
+) -> Optional[datetime]:
+    """Return the next regular-session boundary relevant to quote polling.
+
+    The returned timezone-aware market-local timestamp is the next open,
+    lunch-break start/end, or close.  Non-trading days resolve directly to
+    the next exchange session open, so clients can sleep without polling a
+    quote provider throughout weekends and exchange holidays.
+
+    Calendar failures return ``None`` (fail closed for automatic polling).
+    Explicit user actions such as a window-focus refresh remain independent
+    from this schedule.
+    """
+    if market not in MARKET_EXCHANGE or market not in MARKET_TIMEZONE:
+        return None
+    if not _XCALS_AVAILABLE:
+        return None
+
+    market_now = get_market_now(market, current_time=current_time)
+    local_date = market_now.date()
+    try:
+        cal = xcals.get_calendar(MARKET_EXCHANGE[market])
+        if cal.is_session(local_date):
+            session = cal.date_to_session(local_date, direction="previous")
+            candidates = [
+                _as_market_datetime(cal.session_open(session), MARKET_TIMEZONE[market]),
+                _as_market_datetime(cal.session_break_start(session), MARKET_TIMEZONE[market]),
+                _as_market_datetime(cal.session_break_end(session), MARKET_TIMEZONE[market]),
+                _as_market_datetime(cal.session_close(session), MARKET_TIMEZONE[market]),
+            ]
+            future_boundaries = [
+                boundary
+                for boundary in candidates
+                if boundary is not None and boundary > market_now
+            ]
+            if future_boundaries:
+                return min(future_boundaries)
+            next_session = cal.next_session(session)
+        else:
+            next_session = cal.date_to_session(local_date, direction="next")
+
+        return _as_market_datetime(
+            cal.session_open(next_session),
+            MARKET_TIMEZONE[market],
+        )
+    except Exception as exc:
+        logger.warning(
+            "trading_calendar.get_next_quote_refresh_transition failed: %s",
+            exc,
+        )
+        return None
+
+
 def _add_warning_code(warnings: List[str], code: str) -> None:
     if code not in warnings:
         warnings.append(code)

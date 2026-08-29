@@ -1,9 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
 
 const smokePassword = process.env.DSA_WEB_SMOKE_PASSWORD;
+const hasReportFixture = process.env.DSA_WEB_SMOKE_REPORTS === '1';
 
-if (!smokePassword) {
-  test.skip(true, 'Set DSA_WEB_SMOKE_PASSWORD to run report markdown smoke tests.');
+if (!smokePassword || !hasReportFixture) {
+  test.skip(true, 'Set DSA_WEB_SMOKE_PASSWORD and DSA_WEB_SMOKE_REPORTS=1 with report history fixtures to run report markdown smoke tests.');
 }
 
 test.use({ locale: 'zh-CN' });
@@ -26,6 +27,10 @@ async function login(page: Page) {
 
   // Fill password and submit
   await page.locator('#password').fill(smokePassword!);
+  const confirmation = page.locator('#passwordConfirm');
+  if (await confirmation.isVisible().catch(() => false)) {
+    await confirmation.fill(smokePassword!);
+  }
 
   // Wait for and click the submit button
   const submitButton = page.getByRole('button', { name: /授权进入工作台|完成设置并登录/ });
@@ -42,9 +47,7 @@ async function login(page: Page) {
   // Wait for navigation to home page after login
   await page.waitForURL('/', { timeout: 15_000 });
   await page.waitForLoadState('domcontentloaded');
-  // Wait for page to stabilize by checking for stock input
-  const stockInput = page.getByPlaceholder('输入股票代码或名称，如 600519、贵州茅台、AAPL');
-  await expect(stockInput).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId('home-stock-workspace')).toBeVisible({ timeout: 10_000 });
 }
 
 test.describe('ReportMarkdown component', () => {

@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
+from src.services.provider_chain_diagnostics import summarize_provider_chains
+
 logger = logging.getLogger(__name__)
 
 _CURRENT_CONTEXT: ContextVar[Optional["RunDiagnosticContext"]] = ContextVar(
@@ -293,6 +295,7 @@ class RunDiagnosticSummary:
     stock_code: Optional[str] = None
     trigger_source: Optional[str] = None
     components: Dict[str, RunDiagnosticComponent] = field(default_factory=dict)
+    provider_chains: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         payload = {
@@ -308,6 +311,7 @@ class RunDiagnosticSummary:
                 key: component.to_dict()
                 for key, component in self.components.items()
             },
+            "provider_chains": self.provider_chains,
         }
         payload["copy_text"] = format_copyable_diagnostics(payload)
         return {key: value for key, value in payload.items() if value is not None}
@@ -334,6 +338,7 @@ class RunDiagnosticContext:
     llm_attempt_index_by_type: Dict[str, int] = field(default_factory=dict)
     llm_pending_attempt_index_by_key: Dict[str, List[int]] = field(default_factory=dict)
     llm_pending_attempt_index_by_call_type: Dict[str, List[int]] = field(default_factory=dict)
+    provider_chain_outcomes_logged: bool = False
 
     def record_provider_run(self, provider_run: ProviderRun) -> None:
         self.provider_runs.append(provider_run)
@@ -481,6 +486,9 @@ class RunDiagnosticContext:
             "trigger_source": self.trigger_source,
             "scope": self.scope,
             "provider_runs": [run.to_dict() for run in self.provider_runs],
+            "provider_chains": summarize_provider_chains(
+                run.to_dict() for run in self.provider_runs
+            ),
             "llm_runs": [run.to_dict() for run in self.llm_runs],
             "notification_runs": [run.to_dict() for run in self.notification_runs],
             "history_runs": [run.to_dict() for run in self.history_runs],
@@ -517,10 +525,28 @@ def activate_run_diagnostic_context(
 def reset_run_diagnostic_context(token: Optional[Token]) -> None:
     if token is None:
         return
+    context = get_current_diagnostic_context()
+    try:
+        if context is not None and not context.provider_chain_outcomes_logged:
+            _log_provider_chain_outcomes(context)
+            context.provider_chain_outcomes_logged = True
+    except Exception as exc:  # pragma: no cover - diagnostics must remain fail-open
+        logger.warning("provider chain outcome logging failed: %s", exc)
     try:
         _CURRENT_CONTEXT.reset(token)
     except Exception as exc:  # pragma: no cover - defensive fail-open guard
         logger.warning("run diagnostic context reset failed: %s", exc)
+
+
+def _log_provider_chain_outcomes(context: RunDiagnosticContext) -> None:
+    """Emit one terminal aggregate log per provider chain without changing flow."""
+    chains = summarize_provider_chains(run.to_dict() for run in context.provider_runs)
+    for chain in chains:
+        message = "[数据源链路] %s" % chain["message"]
+        if chain["status"] in {"failed", "degraded"}:
+            logger.warning(message)
+        else:
+            logger.debug(message)
 
 
 def current_diagnostic_snapshot() -> Optional[Dict[str, Any]]:
@@ -1429,6 +1455,7 @@ def build_run_diagnostic_summary(
         run for run in _as_list(diagnostics.get("llm_runs"))
         if isinstance(run, dict)
     ]
+    provider_chains = summarize_provider_chains(provider_runs)
 
     daily_data_component = _provider_component(
         key="daily_data",
@@ -1507,6 +1534,7 @@ def build_run_diagnostic_summary(
         status_label=_SUMMARY_STATUS_LABELS[status],
         reason=reason,
         components=components,
+        provider_chains=provider_chains,
     ).to_dict()
 
 
@@ -1525,6 +1553,15 @@ def format_copyable_diagnostics(summary: Dict[str, Any]) -> str:
         f"stock_code: {summary.get('stock_code') or 'unknown'}",
         f"trigger_source: {summary.get('trigger_source') or 'unknown'}",
         f"data_status: {summary.get('status', 'unknown')}",
+        *[
+            "provider_chain: "
+            f"{chain.get('data_type', 'provider')} {chain.get('status', 'unknown')} "
+            f"attempts={chain.get('attempts', 0)} "
+            f"selected={chain.get('selected_provider') or 'none'} "
+            f"latency_ms={chain.get('total_latency_ms', 0)}"
+            for chain in _as_list(summary.get("provider_chains"))
+            if isinstance(chain, dict)
+        ],
         _component_line("realtime_quote"),
         _component_line("daily_data"),
         _component_line("news"),

@@ -294,7 +294,7 @@ class TestAnalyzerGenerateText:
         primary_backend.generate.assert_called()
         fallback_backend.generate.assert_called()
 
-    def test_analyze_preserves_litellm_text_fallback_after_codex_cli_primary_failure(self):
+    def test_analyze_preserves_litellm_text_fallback_after_codex_cli_primary_failure(self, caplog):
         from src.analyzer import AnalysisResult, _AllModelsFailedError
         from src.llm.generation_backend import GenerationBackend, GenerationError, GenerationErrorCode
 
@@ -345,6 +345,7 @@ class TestAnalyzerGenerateText:
         def _backend_for(backend_id):
             return primary_backend if backend_id == "codex_cli" else fallback_backend
 
+        caplog.set_level("INFO", logger="src.analyzer")
         with patch.object(analyzer, "get_generation_backend_config_error", return_value=None), \
              patch.object(analyzer, "is_available", return_value=True), \
              patch.object(analyzer, "_get_generation_backend", side_effect=_backend_for), \
@@ -359,6 +360,8 @@ class TestAnalyzerGenerateText:
         assert result.analysis_summary == "纯文本兜底摘要"
         assert result.raw_response == "这不是 JSON，而是 fallback 模型返回的纯文本分析"
         assert result.model_used == "provider/fallback-model"
+        assert "[LLM返回] provider/fallback-model 响应成功" in caplog.text
+        assert "[LLM路由] 初始模型 codex_cli，最终成功模型 provider/fallback-model" in caplog.text
         mock_parse.assert_called_once_with(
             "这不是 JSON，而是 fallback 模型返回的纯文本分析",
             "600519",
@@ -981,6 +984,47 @@ class TestAnalyzerGenerateText:
         assert len(dispatch_calls) == 2
         assert dispatch_calls[0]["stream"] is True
         assert "stream" not in dispatch_calls[1]
+
+    def test_call_litellm_empty_stream_skips_duplicate_non_stream_when_fallback_exists(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="provider/empty-stream",
+            litellm_fallback_models=["provider/working"],
+            llm_model_list=[],
+        )
+
+        def empty_stream():
+            if False:
+                yield None
+
+        def working_stream():
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="fallback response"))],
+                usage=SimpleNamespace(prompt_tokens=4, completion_tokens=5, total_tokens=9),
+            )
+
+        dispatch_calls = []
+
+        def fake_dispatch(model, call_kwargs, **kwargs):
+            dispatch_calls.append((model, bool(call_kwargs.get("stream"))))
+            if model == "provider/empty-stream":
+                return empty_stream()
+            return working_stream()
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", side_effect=fake_dispatch):
+            text, model, usage = analyzer._call_litellm(
+                "prompt",
+                {"max_tokens": 128, "temperature": 0.2},
+                stream=True,
+            )
+
+        assert text == "fallback response"
+        assert model == "provider/working"
+        _assert_usage_contains(usage, {"prompt_tokens": 4, "completion_tokens": 5, "total_tokens": 9})
+        assert dispatch_calls == [
+            ("provider/empty-stream", True),
+            ("provider/working", True),
+        ]
 
     def test_call_litellm_hermes_route_forces_non_stream_direct_client(self):
         analyzer = self._make_analyzer()

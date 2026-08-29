@@ -248,7 +248,7 @@ const fieldDescriptionMap: Record<string, string> = {
   OPENCODE_CLI_MODEL: 'OpenCode CLI 的可选模型覆盖；留空时使用本机 OpenCode 默认模型。认证和模型可用性由本机 OpenCode 配置负责。',
   GENERATION_BACKEND_TIMEOUT_SECONDS: '单次生成最多等待多少秒，默认 300；主要用于本地 CLI 这类命令行方式。',
   GENERATION_BACKEND_MAX_OUTPUT_BYTES: '单次本地命令行生成可读取的输出大小上限，默认 1048576 字节。',
-  GENERATION_BACKEND_MAX_CONCURRENCY: '同时允许多少个模型生成任务运行，默认 1；使用默认模型配置时不改变分析任务线程数。',
+  GENERATION_BACKEND_MAX_CONCURRENCY: '同时允许多少个模型生成任务运行，默认 1；适用于官方 API、中转渠道和本地 CLI。行情与新闻准备仍可并行。',
   LOCAL_CLI_BACKEND_MAX_CONCURRENCY: '同时允许启动多少个本地命令行生成进程，默认 1；最终不会超过“模型生成最大并发”。',
   LITELLM_MODEL: '主模型，格式 provider/model（如 gemini/gemini-2.5-flash）。配置渠道后自动推断。',
   AGENT_LITELLM_MODEL: '默认模型配置用于问股的模型。留空时继承主模型；无 provider 前缀时按 openai/<model> 解析。选择 Codex 本地 Agent 时，此项保留但不参与 Codex 问股运行。',

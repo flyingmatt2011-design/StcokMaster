@@ -16,6 +16,7 @@ import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from data_provider.base import DataFetcherManager
+from data_provider.a_share_valuation import AShareValuationHistoryService
 
 
 class _DummyFetcher:
@@ -39,6 +40,18 @@ class _DummyBoardFetcher:
 
 
 class TestFundamentalContext(unittest.TestCase):
+    def setUp(self) -> None:
+        # Fundamental unit tests must not depend on public valuation endpoints.
+        self._valuation_patch = patch.object(
+            AShareValuationHistoryService,
+            "get",
+            return_value={"provider": "test", "metrics": {}},
+        )
+        self._valuation_patch.start()
+
+    def tearDown(self) -> None:
+        self._valuation_patch.stop()
+
     def test_offshore_market_returns_not_supported_when_adapter_empty(self) -> None:
         """When yfinance adapter has no data, offshore (US/HK) status is not_supported.
 
@@ -252,6 +265,98 @@ class TestFundamentalContext(unittest.TestCase):
         self.assertIn("growth", ctx)
         self.assertIn("capital_flow", ctx)
         self.assertIn("dragon_tiger", ctx)
+
+    def test_pipeline_realtime_quote_is_reused_for_valuation(self) -> None:
+        manager = DataFetcherManager(fetchers=[])
+        cfg = SimpleNamespace(
+            enable_fundamental_pipeline=True,
+            fundamental_cache_ttl_seconds=0,
+            fundamental_stage_timeout_seconds=1.5,
+            fundamental_fetch_timeout_seconds=0.8,
+            fundamental_retry_max=1,
+        )
+        quote = SimpleNamespace(
+            price=50.0,
+            pe_ratio=12.3,
+            pb_ratio=2.1,
+            total_mv=1.0e11,
+            circ_mv=7.0e10,
+        )
+        empty_bundle = {
+            "status": "not_supported",
+            "growth": {},
+            "earnings": {},
+            "institution": {},
+            "source_chain": [],
+            "errors": [],
+        }
+        with patch("src.config.get_config", return_value=cfg), \
+                patch.object(manager, "get_realtime_quote") as fetch_quote, \
+                patch.object(
+                    manager._fundamental_adapter,
+                    "get_fundamental_bundle",
+                    return_value=empty_bundle,
+                ), \
+                patch.object(manager, "get_capital_flow_context", return_value={"status": "not_supported"}), \
+                patch.object(manager, "get_dragon_tiger_context", return_value={"status": "not_supported"}), \
+                patch.object(manager, "get_board_context", return_value={"status": "not_supported"}):
+            ctx = manager.get_fundamental_context(
+                "600519",
+                budget_seconds=1.5,
+                realtime_quote=quote,
+            )
+
+        fetch_quote.assert_not_called()
+        self.assertEqual(ctx["coverage"]["valuation"], "ok")
+
+    def test_fundamental_context_attaches_history_percentiles_without_replacing_quote(self) -> None:
+        manager = DataFetcherManager(fetchers=[])
+        cfg = SimpleNamespace(
+            enable_fundamental_pipeline=True,
+            fundamental_cache_ttl_seconds=0,
+            fundamental_stage_timeout_seconds=1.5,
+            fundamental_fetch_timeout_seconds=0.8,
+            fundamental_retry_max=1,
+        )
+        quote = SimpleNamespace(
+            price=50.0,
+            pe_ratio=12.3,
+            pb_ratio=2.1,
+            total_mv=1.0e11,
+            circ_mv=7.0e10,
+            source=SimpleNamespace(value="tencent"),
+        )
+        history = {
+            "provider": "eastmoney_valuation_history",
+            "period_years": 5,
+            "metrics": {"pe": {"current": 12.3, "percentile": 21.5}},
+        }
+        empty_bundle = {
+            "status": "not_supported",
+            "growth": {},
+            "earnings": {},
+            "institution": {},
+            "source_chain": [],
+            "errors": [],
+        }
+        with patch("src.config.get_config", return_value=cfg), \
+                patch.object(manager._valuation_history_service, "get", return_value=history), \
+                patch.object(manager._fundamental_adapter, "get_fundamental_bundle", return_value=empty_bundle), \
+                patch.object(manager, "get_capital_flow_context", return_value={"status": "not_supported"}), \
+                patch.object(manager, "get_dragon_tiger_context", return_value={"status": "not_supported"}), \
+                patch.object(manager, "get_board_context", return_value={"status": "not_supported"}):
+            ctx = manager.get_fundamental_context(
+                "600519",
+                budget_seconds=1.5,
+                realtime_quote=quote,
+            )
+
+        valuation = ctx["valuation"]["data"]
+        self.assertEqual(valuation["pe_ratio"], 12.3)
+        self.assertEqual(
+            valuation["history_percentiles"]["metrics"]["pe"]["percentile"],
+            21.5,
+        )
 
     def test_fundamental_context_derives_ttm_dividend_yield_from_quote_price(self) -> None:
         manager = DataFetcherManager(fetchers=[])

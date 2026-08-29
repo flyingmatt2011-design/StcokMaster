@@ -96,6 +96,18 @@ const hasRuntimeOnlyMaskedHermesSecret = (
 
 const RUNTIME_ONLY_HERMES_SECRET_MESSAGE = '运行时注入的 Hermes Key 不会回传；如需在设置页测试，请重新输入 Key 或保存到 .env。';
 
+const GLOBAL_OPTIONAL_CONFIG_WARNING_PREFIXES = [
+  '未配置 Tushare Token',
+  '未配置通知渠道',
+  '仅配置 FEISHU_APP_ID / FEISHU_APP_SECRET 不会开启飞书静态通知',
+] as const;
+
+function filterLLMSaveWarnings(warnings: string[]): string[] {
+  return warnings.filter((warning) => !GLOBAL_OPTIONAL_CONFIG_WARNING_PREFIXES.some(
+    (prefix) => warning.trim().startsWith(prefix),
+  ));
+}
+
 interface ChannelConfig {
   id: string;
   name: string;
@@ -2028,7 +2040,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         reloadNow: true,
         items: updateItems,
       });
-      const responseWarnings = response.warnings || [];
+      const responseWarnings = filterLLMSaveWarnings(response.warnings || []);
       await onSaved(updateItems);
       pendingSaveFeedbackFingerprintRef.current = {
         channels: JSON.stringify(parseChannelsFromItems(updateItems)),
@@ -2315,6 +2327,74 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
 
       {!isCollapsed ? (
         <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
+          <div
+            data-testid="llm-save-toolbar"
+            className="sticky top-2 z-20 rounded-[1.35rem] border border-[var(--settings-border-strong)] bg-[var(--settings-surface)]/95 p-3 shadow-soft-card backdrop-blur-xl"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span
+                    aria-hidden="true"
+                    className={`h-2 w-2 shrink-0 rounded-full ${hasChanges ? 'bg-[var(--settings-accent)]' : 'bg-emerald-500'}`}
+                  />
+                  <p className="text-sm font-medium text-foreground">
+                    {hasChanges ? 'AI 配置有未保存的修改' : 'AI 配置已保存'}
+                  </p>
+                </div>
+                <p className="mt-1 text-xs text-muted-text">
+                  保存后立即写入当前 StockMaster 运行环境，无需在页面底部再次确认。
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="settings-primary"
+                glow={hasChanges}
+                disabled={busy || !hasChanges}
+                onClick={() => void handleSave()}
+              >
+                {isSaving ? '保存中...' : managesRuntimeConfig ? '保存 AI 配置' : '保存渠道配置'}
+              </Button>
+            </div>
+
+            {saveMessage?.type === 'success' ? (
+              <InlineAlert
+                variant="success"
+                message={saveMessage.text}
+                className="mt-3 rounded-lg px-3 py-2 text-sm shadow-none"
+              />
+            ) : null}
+
+            {saveWarnings.length > 0 ? (
+              <InlineAlert
+                variant="warning"
+                title="保存后提示"
+                message={(
+                  <div className="space-y-1">
+                    {saveWarnings.map((warning) => (
+                      <p key={warning}>{warning}</p>
+                    ))}
+                  </div>
+                )}
+                className="mt-3 rounded-lg px-3 py-2 text-sm shadow-none"
+              />
+            ) : null}
+
+            {saveMessage?.type === 'local-error' ? (
+              <InlineAlert
+                variant="danger"
+                message={saveMessage.text}
+                className="mt-3 rounded-lg px-3 py-2 text-sm shadow-none"
+              />
+            ) : null}
+
+            {saveMessage?.type === 'error' ? (
+              <div className="mt-3">
+                <ApiErrorAlert error={saveMessage.error} />
+              </div>
+            ) : null}
+          </div>
+
           <div className="rounded-[1.35rem] border border-[var(--settings-border)] bg-[var(--settings-surface)] p-4 shadow-soft-card">
             <div className="mb-3 flex items-center justify-between">
               <div>
@@ -2524,51 +2604,6 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
             />
           )}
 
-          <div className="flex flex-wrap items-center gap-3">
-            <Button
-              type="button"
-              variant="settings-primary"
-              glow
-              disabled={busy || !hasChanges}
-              onClick={() => void handleSave()}
-            >
-              {isSaving ? '保存中...' : managesRuntimeConfig ? '保存 AI 配置' : '保存渠道配置'}
-            </Button>
-            {!hasChanges ? <span className="text-xs text-muted-text">当前没有未保存的改动</span> : null}
-          </div>
-
-          {saveMessage?.type === 'success' ? (
-            <InlineAlert
-              variant="success"
-              message={saveMessage.text}
-              className="rounded-lg px-3 py-2 text-sm shadow-none"
-            />
-          ) : null}
-
-          {saveWarnings.length > 0 ? (
-            <InlineAlert
-              variant="warning"
-              title="保存后提示"
-              message={(
-                <div className="space-y-1">
-                  {saveWarnings.map((warning) => (
-                    <p key={warning}>{warning}</p>
-                  ))}
-                </div>
-              )}
-              className="rounded-lg px-3 py-2 text-sm shadow-none"
-            />
-          ) : null}
-
-          {saveMessage?.type === 'local-error' ? (
-            <InlineAlert
-              variant="danger"
-              message={saveMessage.text}
-              className="rounded-lg px-3 py-2 text-sm shadow-none"
-            />
-          ) : null}
-
-          {saveMessage?.type === 'error' ? <ApiErrorAlert error={saveMessage.error} /> : null}
         </div>
       ) : null}
     </div>

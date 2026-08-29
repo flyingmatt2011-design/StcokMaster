@@ -379,8 +379,9 @@ print(json.dumps({{"type": "step_finish", "reason": "stop"}}))
     assert "--attach" not in argv
     assert "--dangerously-skip-permissions" not in argv
     assert probe["prompt"] == "prompt from dsa"
-    assert probe["prompt_mode"] == 0o600
-    assert probe["cwd_mode"] == 0o700
+    if os.name != "nt":
+        assert probe["prompt_mode"] == 0o600
+        assert probe["cwd_mode"] == 0o700
     for tool_name in local_cli_backend_module._OPENCODE_DISABLED_TOOL_NAMES:
         assert opencode_config["tools"][tool_name] is False
     assert opencode_config["tools"]["websearch"] is False
@@ -917,7 +918,7 @@ def test_multiple_json_objects_fail_as_invalid_json_ambiguous(tmp_path: Path) ->
 def test_command_not_executable(monkeypatch, tmp_path: Path) -> None:
     not_exec = tmp_path / "not-executable"
     not_exec.write_text("#!/bin/sh\n", encoding="utf-8")
-    monkeypatch.setattr("src.llm.local_cli_backend.shutil.which", lambda _cmd: str(not_exec))
+    monkeypatch.setattr(local_cli_backend_module.shutil, "which", lambda _cmd: str(not_exec))
     preset = LocalCliPreset("codex_cli", "mock", (), "Mock CLI")
     backend = LocalCliGenerationBackend(_config(), preset=preset)
 
@@ -928,7 +929,7 @@ def test_command_not_executable(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_command_not_found(monkeypatch) -> None:
-    monkeypatch.setattr("src.llm.local_cli_backend.shutil.which", lambda _cmd: None)
+    monkeypatch.setattr(local_cli_backend_module.shutil, "which", lambda _cmd: None)
     backend = LocalCliGenerationBackend(_config())
 
     with pytest.raises(GenerationError) as exc_info:
@@ -1002,7 +1003,8 @@ time.sleep(30)
         raise OSError("mock stat failure sk-secretsecretsecret")
 
     monkeypatch.setattr(
-        "src.llm.local_cli_backend._combined_path_size_required",
+        local_cli_backend_module,
+        "_combined_path_size_required",
         _raise_stat_error,
     )
 
@@ -1034,7 +1036,8 @@ def test_output_read_error_is_structured_unknown_not_empty(
         raise OSError("mock read failure")
 
     monkeypatch.setattr(
-        "src.llm.local_cli_backend._read_text_file_required",
+        local_cli_backend_module,
+        "_read_text_file_required",
         _raise_read_error,
     )
 
@@ -1313,13 +1316,13 @@ raise SystemExit(2)
 def test_process_start_error_diagnostics_are_redacted(monkeypatch) -> None:
     home_path = Path.home()
     executable_path = str(home_path / "secret" / "bin" / "codex")
-    monkeypatch.setattr("src.llm.local_cli_backend.shutil.which", lambda _cmd: executable_path)
-    monkeypatch.setattr("src.llm.local_cli_backend.os.access", lambda _path, _mode: True)
+    monkeypatch.setattr(local_cli_backend_module.shutil, "which", lambda _cmd: executable_path)
+    monkeypatch.setattr(local_cli_backend_module.os, "access", lambda _path, _mode: True)
 
     def _raise_os_error(*_args, **_kwargs):
         raise OSError(f"Exec format error: {executable_path} sk-secretsecretsecret")
 
-    monkeypatch.setattr("src.llm.local_cli_backend.subprocess.Popen", _raise_os_error)
+    monkeypatch.setattr(local_cli_backend_module.subprocess, "Popen", _raise_os_error)
     backend = LocalCliGenerationBackend(_config())
 
     with pytest.raises(GenerationError) as exc_info:
@@ -1340,7 +1343,7 @@ def test_prompt_is_passed_as_stdin_file_not_pipe(tmp_path: Path, monkeypatch) ->
         captured["stdin_closed_at_popen"] = getattr(stdin, "closed", True)
         raise OSError("mock start failure")
 
-    monkeypatch.setattr("src.llm.local_cli_backend.subprocess.Popen", _raise_os_error)
+    monkeypatch.setattr(local_cli_backend_module.subprocess, "Popen", _raise_os_error)
     backend = _backend(tmp_path, "print('unused')")
 
     with pytest.raises(GenerationError):
@@ -1406,6 +1409,8 @@ def test_env_allowlist_and_denylist(monkeypatch) -> None:
     assert child_env["HOME"] == "/tmp/home"
     assert child_env["CODEX_HOME"] == "/tmp/codex-home"
     assert child_env["LC_MESSAGES"] == "C"
+    assert child_env["PYTHONUTF8"] == "1"
+    assert child_env["PYTHONIOENCODING"] == "utf-8"
     assert "UNRELATED_VALUE" not in child_env
     assert "AIHUBMIX_KEY" not in child_env
     assert "CODEX_CLI_TOKEN" not in child_env

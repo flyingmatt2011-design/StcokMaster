@@ -157,6 +157,18 @@ test('createDesktopBridge delegates update actions to ipcRenderer', async (t) =>
     channel: preloadModule.DESKTOP_RENDER_SHARE_IMAGE_CHANNEL,
     payload: 17,
   });
+  assert.deepEqual(await desktopBridge.getAlgorithmUpdateState(), {
+    channel: preloadModule.ALGORITHM_UPDATE_GET_STATE_CHANNEL,
+    payload: undefined,
+  });
+  assert.deepEqual(await desktopBridge.checkAlgorithmUpdateNow(), {
+    channel: preloadModule.ALGORITHM_UPDATE_CHECK_NOW_CHANNEL,
+    payload: undefined,
+  });
+  assert.deepEqual(await desktopBridge.syncAlgorithmUpdate(), {
+    channel: preloadModule.ALGORITHM_UPDATE_SYNC_CHANNEL,
+    payload: undefined,
+  });
 
   const receivedPayloads = [];
   const unsubscribe = desktopBridge.onUpdateStateChange((payload) => {

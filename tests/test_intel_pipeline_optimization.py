@@ -9,7 +9,8 @@ from types import SimpleNamespace
 
 from src.core.pipeline import StockAnalysisPipeline
 from src.schemas.analysis_context_pack import ContextFieldStatus
-from src.search_service import SearchResponse, SearchResult, SearchService
+from src.search_provider_base import SearchResponse, SearchResult
+from src.search_service import SearchService
 from src.services.analysis_context_builder import _build_news_block
 from src.services.intel_context_status import (
     IntelCoverageStatus,

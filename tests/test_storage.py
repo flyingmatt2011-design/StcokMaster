@@ -5,6 +5,7 @@ import os
 import sqlite3
 import tempfile
 import threading
+from contextlib import closing
 from datetime import date
 from unittest.mock import patch
 
@@ -22,7 +23,7 @@ class TestStorage(unittest.TestCase):
 
     @staticmethod
     def _list_sqlite_indexes(db_path: str, table_name: str) -> dict[str, list[str]]:
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn, conn:
             indexes = {}
             for row in conn.execute(f"PRAGMA index_list({table_name})").fetchall():
                 index_name = row[1]
@@ -37,7 +38,7 @@ class TestStorage(unittest.TestCase):
 
     @staticmethod
     def _list_sqlite_unique_indexes(db_path: str, table_name: str) -> dict[str, list[str]]:
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn, conn:
             rows = conn.execute(f"PRAGMA index_list({table_name})").fetchall()
             unique_indexes = {}
             for row in rows:
@@ -57,7 +58,7 @@ class TestStorage(unittest.TestCase):
         db_path = os.path.join(temp_dir.name, "legacy_intel.sqlite")
 
         try:
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     """CREATE TABLE intelligence_sources (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,7 +138,7 @@ class TestStorage(unittest.TestCase):
                 unique_indexes_after["uix_intel_item_scope"],
                 ["source_id", "url", "scope_type", "scope_value", "market"],
             )
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 table_count = conn.execute("SELECT COUNT(*) FROM intelligence_items").fetchone()[0]
                 temp_tables = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'intelligence_items_recreate_tmp_%'"
@@ -178,6 +179,64 @@ class TestStorage(unittest.TestCase):
         self.assertEqual(count, 1)
 
         DatabaseManager.reset_instance()
+
+    def test_startup_repairs_only_legacy_efinance_lot_volume_once(self):
+        DatabaseManager.reset_instance()
+        Config.reset_instance()
+        temp_dir = tempfile.TemporaryDirectory()
+        db_path = os.path.join(temp_dir.name, "legacy_efinance_volume.db")
+        db_url = f"sqlite:///{db_path}"
+
+        try:
+            db = DatabaseManager(db_url=db_url)
+            with db.session_scope() as session:
+                session.add_all([
+                    StockDaily(
+                        code="002517",
+                        date=date(2026, 8, 21),
+                        close=16.62,
+                        volume=547_943,
+                        amount=902_987_876,
+                        data_source="EfinanceFetcher",
+                    ),
+                    StockDaily(
+                        code="600519",
+                        date=date(2026, 8, 21),
+                        close=1_420,
+                        volume=3_000_000,
+                        amount=4_260_000_000,
+                        data_source="EfinanceFetcher",
+                    ),
+                    StockDaily(
+                        code="000001",
+                        date=date(2026, 8, 21),
+                        close=12,
+                        volume=100_000,
+                        amount=120_000_000,
+                        data_source="AkshareFetcher",
+                    ),
+                ])
+
+            DatabaseManager.reset_instance()
+            db = DatabaseManager(db_url=db_url)
+            with db.get_session() as session:
+                volumes = {
+                    row.code: row.volume
+                    for row in session.execute(
+                        select(StockDaily).where(
+                            StockDaily.date == date(2026, 8, 21)
+                        )
+                    ).scalars()
+                }
+
+            self.assertEqual(volumes["002517"], 54_794_300)
+            self.assertEqual(volumes["600519"], 3_000_000)
+            self.assertEqual(volumes["000001"], 100_000)
+            self.assertEqual(db._repair_legacy_efinance_volume_units(), 0)
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            temp_dir.cleanup()
 
     def test_fresh_decision_signal_schema_has_profile_indexes(self):
         DatabaseManager.reset_instance()
@@ -226,7 +285,7 @@ class TestStorage(unittest.TestCase):
         deeply_nested_json = "[" * 10_000 + "]" * 10_000
 
         try:
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     """CREATE TABLE decision_signals (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -288,7 +347,7 @@ class TestStorage(unittest.TestCase):
             with self.assertLogs("src.storage", level="INFO") as logs:
                 DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(decision_signals)").fetchall()}
                 rows = conn.execute(
                     "SELECT id, decision_profile FROM decision_signals ORDER BY id"
@@ -365,7 +424,7 @@ class TestStorage(unittest.TestCase):
         db_path = os.path.join(temp_dir.name, "existing_decision_profile.db")
 
         try:
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute(
                     """CREATE TABLE decision_signals (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -395,7 +454,7 @@ class TestStorage(unittest.TestCase):
             with self.assertLogs("src.storage", level="INFO") as logs:
                 DatabaseManager(db_url=f"sqlite:///{db_path}")
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 profiles = conn.execute(
                     "SELECT decision_profile FROM decision_signals ORDER BY id"
                 ).fetchall()
@@ -1155,8 +1214,8 @@ class TestStorage(unittest.TestCase):
 
             self.assertEqual(total, 1)
         finally:
-            temp_dir.cleanup()
             DatabaseManager.reset_instance()
+            temp_dir.cleanup()
 
 if __name__ == '__main__':
     unittest.main()

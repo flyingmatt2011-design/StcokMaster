@@ -1350,10 +1350,13 @@ def main() -> int:
     logger.info(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
 
-    # 验证配置
-    warnings = config.validate()
-    for warning in warnings:
-        logger.warning(warning)
+    # 使用现有结构化校验的 error / warning / info 严重级别。
+    # warn（默认）保持兼容并继续启动；strict 仅在 error 级问题存在时阻止启动。
+    from src.services.runtime_config_validation import validate_runtime_config
+
+    config_validation = validate_runtime_config(config, logger)
+    if not config_validation.can_start:
+        return 1
 
     if getattr(args, "check_notify", False):
         from src.services.notification_diagnostics import (

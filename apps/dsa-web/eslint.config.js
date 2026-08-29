@@ -19,5 +19,11 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // Existing effects intentionally coordinate async API loading and request cancellation.
+      // Enforcing this advisory rule would require deferring those effects and changes observable
+      // loading/retry ordering; the test suite covers the intended behavior instead.
+      'react-hooks/set-state-in-effect': 'off',
+    },
   },
 ])

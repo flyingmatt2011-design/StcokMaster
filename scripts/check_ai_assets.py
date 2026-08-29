@@ -44,11 +44,33 @@ def ensure_file_exists(path: Path, description: str) -> None:
         fail(f"{description} is missing: {path.relative_to(ROOT)}")
 
 
+def git_index_mode(path: Path) -> str | None:
+    """Return the staged Git mode for a repository path, if it is tracked."""
+    result = subprocess.run(
+        ["git", "ls-files", "--stage", "--", path.relative_to(ROOT).as_posix()],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    line = result.stdout.strip()
+    return line.split(maxsplit=1)[0] if line else None
+
+
 def ensure_symlink() -> None:
     ensure_file_exists(AGENTS, "canonical AGENTS.md")
     if not CLAUDE.exists():
         fail("CLAUDE.md is missing")
     if not CLAUDE.is_symlink():
+        # Git for Windows can materialize a tracked symlink as a regular file when
+        # core.symlinks is unavailable. The index remains authoritative: accept only
+        # a 120000 entry whose payload is exactly the canonical relative target.
+        if (
+            sys.platform == "win32"
+            and git_index_mode(CLAUDE) == "120000"
+            and CLAUDE.read_text(encoding="utf-8").strip() == "AGENTS.md"
+        ):
+            return
         fail("CLAUDE.md must be a symlink to AGENTS.md")
 
     target = Path(CLAUDE.readlink())

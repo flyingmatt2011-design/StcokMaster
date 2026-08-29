@@ -62,6 +62,7 @@ describe('useDashboardLifecycle', () => {
       vi.advanceTimersByTime(30_000);
     });
     expect(refreshHistory).toHaveBeenCalledWith(true);
+    expect(defaultMocks.refreshStockBar).not.toHaveBeenCalled();
     expect(defaultMocks.refreshMarketReviewHistory).toHaveBeenCalledWith(true);
     expect(refreshActiveTasks).toHaveBeenCalledTimes(2);
     expect(onDashboardDataRefresh).toHaveBeenCalledTimes(1);
@@ -75,6 +76,7 @@ describe('useDashboardLifecycle', () => {
     });
 
     expect(refreshHistory).toHaveBeenCalledTimes(2);
+    expect(defaultMocks.refreshStockBar).toHaveBeenCalledTimes(1);
     expect(defaultMocks.refreshMarketReviewHistory).toHaveBeenCalledTimes(2);
     expect(refreshActiveTasks).toHaveBeenCalledTimes(3);
     expect(onDashboardDataRefresh).toHaveBeenCalledTimes(2);

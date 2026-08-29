@@ -21,6 +21,19 @@ const diagnosticSummary: RunDiagnosticSummary = {
   statusLabel: '部分降级',
   reason: '实时行情 baostock 成功，前置数据源失败后已继续',
   copyText: 'trace_id: trace-1234567890abcdef\ndata_status: degraded',
+  providerChains: [
+    {
+      dataType: 'realtime_quote',
+      label: '实时行情',
+      status: 'degraded',
+      message: '实时行情在 2 次尝试后由 baostock 降级成功',
+      attempts: 2,
+      providers: ['akshare', 'baostock'],
+      selectedProvider: 'baostock',
+      totalLatencyMs: 1320,
+      recordCount: 1,
+    },
+  ],
   components: {
     realtimeQuote: {
       key: 'realtime_quote',
@@ -66,8 +79,10 @@ describe('ReportDiagnostics', () => {
     fireEvent.click(screen.getByText('运行状态'));
 
     expect(panel).toHaveAttribute('open');
-    expect(screen.getByText('最近失败后已降级')).toBeInTheDocument();
+    expect(screen.getAllByText('最近失败后已降级')).toHaveLength(2);
     expect(screen.getByText('未配置')).toBeInTheDocument();
+    expect(screen.getByText('数据源降级链路')).toBeInTheDocument();
+    expect(screen.getByText('2 次尝试 · 1320 ms · akshare → baostock')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '复制排障信息' }));
 

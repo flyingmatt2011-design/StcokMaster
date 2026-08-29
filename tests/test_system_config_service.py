@@ -20,12 +20,22 @@ ensure_litellm_stub()
 
 from src.config import ANSPIRE_LLM_MODEL_DEFAULT, Config
 from src.core.config_manager import ConfigManager
+from src.core.config_registry import _FIELD_DEFINITIONS
 from src.llm.backend_registry import GENERATION_ONLY_BACKEND_IDS
 from src.services.system_config_service import ConfigConflictError, ConfigImportError, ConfigValidationError, SystemConfigService
+
+_CONFIG_TEST_ENV_KEYS = frozenset(_FIELD_DEFINITIONS) | {"ENV_FILE"}
 
 
 class SystemConfigServiceTestCase(unittest.TestCase):
     def setUp(self) -> None:
+        self._config_env_snapshot = {
+            key: os.environ[key]
+            for key in _CONFIG_TEST_ENV_KEYS
+            if key in os.environ
+        }
+        for key in _CONFIG_TEST_ENV_KEYS:
+            os.environ.pop(key, None)
         self.temp_dir = tempfile.TemporaryDirectory()
         self.env_path = Path(self.temp_dir.name) / ".env"
         self.env_path.write_text(
@@ -48,7 +58,9 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         Config.reset_instance()
-        os.environ.pop("ENV_FILE", None)
+        for key in _CONFIG_TEST_ENV_KEYS:
+            os.environ.pop(key, None)
+        os.environ.update(self._config_env_snapshot)
         self.temp_dir.cleanup()
 
     def _rewrite_env(self, *lines: str) -> None:
@@ -4601,6 +4613,34 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             ]
         )
         self.assertFalse(any(issue["code"] == "ssrf_blocked" for issue in validation["issues"]))
+
+    def test_search_provider_reports_missing_configuration_without_network(self) -> None:
+        payload = self.service.test_search_provider(
+            provider="bocha",
+            items=[{"key": "BOCHA_API_KEYS", "value": ""}],
+        )
+
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["error_code"], "config_missing")
+        self.assertEqual(payload["provider"], "bocha")
+
+    @patch("src.search_service.BochaSearchProvider.search")
+    def test_search_provider_uses_unsaved_draft_and_returns_result_count(self, mock_search) -> None:
+        mock_search.return_value = SimpleNamespace(
+            success=True,
+            results=[SimpleNamespace(title="贵州茅台公告")],
+            error_message=None,
+        )
+
+        payload = self.service.test_search_provider(
+            provider="bocha",
+            items=[{"key": "BOCHA_API_KEYS", "value": "draft-key"}],
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["result_count"], 1)
+        self.assertIsNone(payload["error_code"])
+        mock_search.assert_called_once_with("贵州茅台 600519 最新公告", max_results=3, days=7)
 
 
 if __name__ == "__main__":

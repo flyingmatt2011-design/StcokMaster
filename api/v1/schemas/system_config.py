@@ -26,6 +26,7 @@ NotificationTestChannel = Literal[
     "slack",
     "astrbot",
 ]
+SearchTestProvider = Literal["bocha", "tavily", "brave", "serpapi", "searxng"]
 
 
 class SystemConfigOption(BaseModel):
@@ -350,6 +351,27 @@ class TestNotificationChannelResponse(BaseModel):
     retryable: bool = False
     latency_ms: Optional[int] = None
     attempts: List[NotificationTestAttempt] = Field(default_factory=list)
+
+
+class TestSearchProviderRequest(BaseModel):
+    """Request payload for testing one news-search provider."""
+
+    provider: SearchTestProvider
+    items: List[SystemConfigUpdateItem] = Field(default_factory=list)
+    mask_token: str = "******"
+    query: str = Field(default="贵州茅台 600519 最新公告", min_length=1, max_length=200)
+
+
+class TestSearchProviderResponse(BaseModel):
+    """Response payload for one news-search connectivity test."""
+
+    success: bool
+    provider: SearchTestProvider
+    message: str
+    result_count: int = 0
+    error_code: Optional[str] = None
+    retryable: bool = False
+    latency_ms: Optional[int] = None
 
 
 class DiscoverLLMChannelModelsRequest(BaseModel):

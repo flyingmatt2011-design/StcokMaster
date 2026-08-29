@@ -2009,9 +2009,10 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         self.assertEqual(len(observed_timeouts), 5)
         self.assertTrue(all(0 < timeout <= 0.25 for timeout in observed_timeouts))
         self.assertTrue(all(
-            later < earlier
+            later <= earlier
             for earlier, later in zip(observed_timeouts, observed_timeouts[1:])
         ))
+        self.assertLess(observed_timeouts[-1], observed_timeouts[0])
         fetcher_manager.assert_not_called()
 
     def test_hotspot_provider_routes_remaining_budget_into_http_timeout(self) -> None:

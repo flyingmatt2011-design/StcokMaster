@@ -59,14 +59,13 @@ export function useDashboardLifecycle({
 
     const intervalId = window.setInterval(() => {
       void refreshHistory(true);
-      void refreshStockBar();
       void refreshMarketReviewHistory?.(true);
       void refreshActiveTasks();
       onDashboardDataRefresh?.();
     }, 30_000);
 
     return () => window.clearInterval(intervalId);
-  }, [enabled, onDashboardDataRefresh, refreshHistory, refreshMarketReviewHistory, refreshStockBar, refreshActiveTasks]);
+  }, [enabled, onDashboardDataRefresh, refreshHistory, refreshMarketReviewHistory, refreshActiveTasks]);
 
   useEffect(() => {
     if (!enabled) {

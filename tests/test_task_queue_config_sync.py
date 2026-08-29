@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import sys
+import json
+import os
+import tempfile
 import types
 import unittest
 from types import SimpleNamespace
@@ -25,7 +28,7 @@ if _orig_data_provider is None:
     pkg_mod.base = sys.modules["data_provider.base"]
     sys.modules["data_provider"] = pkg_mod
 
-from src.services.task_queue import AnalysisTaskQueue, get_task_queue, _dedupe_stock_code_key
+from src.services.task_queue import AnalysisTaskQueue, TaskInfo, TaskStatus, get_task_queue, _dedupe_stock_code_key
 
 if _orig_data_provider_base is None:
     sys.modules.pop("data_provider.base", None)
@@ -108,6 +111,49 @@ class TaskQueueConfigSyncTestCase(unittest.TestCase):
 
         self.assertIs(synced, queue)
         self.assertEqual(synced.max_workers, 3)
+
+    def test_persists_only_recoverable_unfinished_analysis_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "unfinished.json")
+            with patch.dict(os.environ, {"STOCKMASTER_TASK_STATE_PATH": state_path}):
+                queue = AnalysisTaskQueue(max_workers=1)
+                queue._tasks["analysis"] = TaskInfo(
+                    task_id="analysis",
+                    stock_code="600519",
+                    status=TaskStatus.PROCESSING,
+                    recoverable=True,
+                )
+                queue._tasks["background"] = TaskInfo(
+                    task_id="background",
+                    stock_code="market_review",
+                    status=TaskStatus.PROCESSING,
+                    recoverable=False,
+                )
+                with queue._data_lock:
+                    queue._persist_unfinished_tasks_locked()
+
+            payload = json.loads(open(state_path, encoding="utf-8").read())
+            self.assertEqual([item["task_id"] for item in payload["tasks"]], ["analysis"])
+
+    def test_restores_interrupted_analysis_as_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "unfinished.json")
+            with open(state_path, "w", encoding="utf-8") as handle:
+                json.dump({"version": 1, "tasks": [{
+                    "task_id": "restored-task",
+                    "stock_code": "600519",
+                    "report_type": "detailed",
+                    "analysis_phase": "auto",
+                }]}, handle)
+            with patch.dict(os.environ, {"STOCKMASTER_TASK_STATE_PATH": state_path}), \
+                 patch.object(AnalysisTaskQueue, "_execute_task", return_value=None):
+                queue = AnalysisTaskQueue(max_workers=1)
+
+            restored = queue.get_task("restored-task")
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.status, TaskStatus.PENDING)
+            self.assertTrue(restored.recovered)
+            self.assertTrue(restored.recoverable)
 
 
 if __name__ == "__main__":

@@ -31,7 +31,10 @@ def create_generation_backend(
                 provider=LITELLM_BACKEND_ID,
                 details={"reason": "missing_litellm_completion_callable"},
             )
-        return LiteLLMGenerationBackend(litellm_completion_callable)
+        return LiteLLMGenerationBackend(
+            litellm_completion_callable,
+            max_concurrency=getattr(config, "generation_backend_max_concurrency", 1),
+        )
     if normalized in LOCAL_CLI_GENERATION_BACKEND_IDS:
         return LocalCliGenerationBackend(config, preset_id=normalized)
 

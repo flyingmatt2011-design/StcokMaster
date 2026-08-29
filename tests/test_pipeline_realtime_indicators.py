@@ -202,8 +202,18 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
         context = {
             "code": "600519",
             "date": (today - timedelta(days=1)).isoformat(),
-            "today": {"close": 15.0, "ma5": 14.8, "ma10": 14.5},
-            "yesterday": {"close": 14.5, "volume": 1000000},
+            "today": {
+                "date": (today - timedelta(days=1)).isoformat(),
+                "close": 15.0,
+                "volume": 1500000,
+                "ma5": 14.8,
+                "ma10": 14.5,
+            },
+            "yesterday": {
+                "date": (today - timedelta(days=2)).isoformat(),
+                "close": 14.5,
+                "volume": 1000000,
+            },
         }
         quote = _make_realtime_quote(price=15.72, volume=2000000)
         trend = TrendAnalysisResult(
@@ -225,6 +235,9 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
         self.assertEqual(enhanced["today"]["date"], today.isoformat())
         self.assertEqual(enhanced["today"]["data_source"], "realtime:tencent")
         self.assertEqual(enhanced["today"]["realtime_source"], "tencent")
+        self.assertEqual(enhanced["yesterday"]["date"], (today - timedelta(days=1)).isoformat())
+        self.assertEqual(enhanced["yesterday"]["close"], 15.0)
+        self.assertEqual(enhanced["volume_change_ratio"], 1.33)
         self.assertIn("price_change_ratio", enhanced)
         self.assertIn("volume_change_ratio", enhanced)
 
@@ -410,6 +423,51 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
             context, None, None, trend, "贵州茅台"
         )
         self.assertEqual(enhanced["today"]["close"], 15.0)
+
+    def test_non_trading_session_does_not_relabel_last_bar_as_calendar_today(self) -> None:
+        context = {
+            "code": "600519",
+            "date": "2026-08-21",
+            "today": {
+                "date": "2026-08-21",
+                "close": 15.0,
+                "volume": 1_500_000,
+                "ma5": 14.8,
+            },
+            "yesterday": {
+                "date": "2026-08-20",
+                "close": 14.5,
+                "volume": 1_000_000,
+            },
+        }
+        quote = _make_realtime_quote(price=15.0, volume=1_500_000)
+        trend = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            ma5=14.8,
+            ma10=14.5,
+            ma20=14.2,
+        )
+
+        enhanced = self.pipeline._enhance_context(
+            context,
+            quote,
+            None,
+            trend,
+            "贵州茅台",
+            market_phase_context={
+                "phase": "non_trading",
+                "is_trading_day": False,
+                "is_market_open_now": False,
+                "effective_daily_bar_date": "2026-08-21",
+            },
+        )
+
+        self.assertEqual(enhanced["date"], "2026-08-21")
+        self.assertEqual(enhanced["today"]["date"], "2026-08-21")
+        self.assertEqual(enhanced["yesterday"]["date"], "2026-08-20")
+        self.assertNotIn("is_estimated", enhanced["today"])
+        self.assertEqual(enhanced["realtime"]["price"], 15.0)
 
     def test_today_not_overridden_when_trend_ma_zero(self) -> None:
         """StockTrendAnalyzer 因数据不足提前返回 ma5=0.0 时，不应覆盖 today。"""

@@ -51,6 +51,7 @@ from src.utils.data_processing import (
     extract_board_detail_fields,
     extract_market_structure_detail_field,
     extract_realtime_detail_fields,
+    extract_stockmaster_display_fields,
 )
 from src.analysis_context_pack_overview import (
     extract_analysis_context_pack_overview,
@@ -180,6 +181,19 @@ def _coalesce_int(*values: Any) -> Optional[int]:
     return None
 
 
+def _coalesce_float(*values: Any) -> Optional[float]:
+    for value in values:
+        if value is None or isinstance(value, bool):
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _extract_guardrail_reason(raw_result: Any) -> Optional[str]:
     if not isinstance(raw_result, dict):
         return None
@@ -271,6 +285,9 @@ def get_history_list(
                 change_pct=item.get("change_pct"),
                 volume_ratio=item.get("volume_ratio"),
                 turnover_rate=item.get("turnover_rate"),
+                ideal_buy=item.get("ideal_buy"),
+                stop_loss=item.get("stop_loss"),
+                bias_ma5=item.get("bias_ma5"),
                 model_used=item.get("model_used"),
                 created_at=item.get("created_at"),
                 market_phase_summary=item.get("market_phase_summary"),
@@ -459,6 +476,8 @@ def get_stock_bar(
                 guardrail_reason=_extract_guardrail_reason(raw_result),
                 align_with_score=True,
             )
+            sniper_points = service._get_display_sniper_points(record, raw_result)
+            stockmaster_display = extract_stockmaster_display_fields(raw_result)
 
             display_stock_code = service._display_stock_code(record.code)
             analysis_count = db_manager.get_analysis_history_paginated(
@@ -475,6 +494,21 @@ def get_stock_bar(
                     operation_advice=operation_advice,
                     action=action_fields["action"],
                     action_label=action_fields["action_label"],
+                    current_price=_coalesce_float(
+                        getattr(record, "current_price", None),
+                        _raw_result_value(raw_result, "current_price"),
+                    ),
+                    change_pct=_coalesce_float(
+                        getattr(record, "change_pct", None),
+                        _raw_result_value(raw_result, "change_pct"),
+                    ),
+                    trend_prediction=_coalesce_text(
+                        getattr(record, "trend_prediction", None),
+                        _raw_result_value(raw_result, "trend_prediction"),
+                    ),
+                    ideal_buy=sniper_points.get("ideal_buy"),
+                    stop_loss=sniper_points.get("stop_loss"),
+                    bias_ma5=_coalesce_float(stockmaster_display.get("bias_ma5")),
                     analysis_count=analysis_count,
                     last_analysis_time=service._serialize_created_at(record.created_at),
                     model_used=normalize_model_used(model_used),
@@ -634,6 +668,7 @@ def get_history_detail(
             result.get("context_snapshot"),
             result.get("raw_result"),
         )
+        stockmaster_display = extract_stockmaster_display_fields(result.get("raw_result"))
 
         details = ReportDetails(
             news_content=result.get("news_content"),
@@ -646,6 +681,11 @@ def get_history_detail(
             sector_rankings=extracted_boards.get("sector_rankings"),
             concept_rankings=extracted_boards.get("concept_rankings"),
             market_structure=market_structure,
+            core_conclusion=stockmaster_display.get("core_conclusion"),
+            risk_alerts=stockmaster_display.get("risk_alerts", []),
+            positive_catalysts=stockmaster_display.get("positive_catalysts", []),
+            support_level=stockmaster_display.get("support_level"),
+            resistance_level=stockmaster_display.get("resistance_level"),
         )
         
         return AnalysisReport(
@@ -791,7 +831,10 @@ def get_history_news(
             NewsIntelItem(
                 title=item.get("title", ""),
                 snippet=item.get("snippet"),
-                url=item.get("url", "")
+                url=item.get("url", ""),
+                source=item.get("source"),
+                published_date=item.get("published_date"),
+                dimension=item.get("dimension"),
             )
             for item in items
         ]

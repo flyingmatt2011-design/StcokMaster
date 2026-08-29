@@ -6,6 +6,14 @@ const net = require('net');
 const http = require('http');
 const https = require('https');
 const { TextDecoder } = require('util');
+const { classifyChangedPaths } = require('./algorithm-update/classifier');
+const { DEFAULT_POLICY } = require('./algorithm-update/constants');
+const { fetchUpstreamCompare } = require('./algorithm-update/githubClient');
+const { downloadUpstreamFiles } = require('./algorithm-update/githubClient');
+const { createAlgorithmUpdateMonitor } = require('./algorithm-update/monitor');
+const { stageBackendCandidate, applyLocalOverlayPolicy } = require('./algorithm-update/candidateInstaller');
+const { activateCandidate, ensureCurrentPointer, readPointer } = require('./algorithm-update/runtimeManager');
+const { validatePythonCandidate } = require('./algorithm-update/validator');
 
 let mainWindow = null;
 let backendProcess = null;
@@ -18,9 +26,102 @@ let electronAutoUpdater = undefined;
 let electronAutoUpdaterConfigured = false;
 let electronUpdateCheckInFlight = false;
 let desktopBackendOrigin = '';
+let algorithmUpdateMonitor = null;
+let lastAlgorithmUpdatePromptCommit = '';
+let activeBackendSourceRoot = '';
+let backendRuntimeContext = null;
+let algorithmSyncInFlight = null;
 
 function resolveWindowBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? '#08080c' : '#f4f7fb';
+}
+
+function resolveStockMasterBaselineCommit() {
+  const candidates = [
+    path.join(appRootDev, 'stockmaster', 'upstream-baseline.json'),
+    path.join(process.resourcesPath || '', 'stockmaster', 'upstream-baseline.json'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+      if (typeof parsed.commit === 'string' && /^[0-9a-f]{40}$/i.test(parsed.commit)) return parsed.commit;
+    } catch { /* packaged builds may only have one of the candidates */ }
+  }
+  return '';
+}
+
+function resolveAlgorithmRuntimeRoot() {
+  return path.join(app.getPath('userData'), 'stockmaster-algorithm-runtimes');
+}
+
+async function resolveActiveAlgorithmRuntime() {
+  if (app.isPackaged) return null;
+  const pointer = await readPointer(path.join(resolveAlgorithmRuntimeRoot(), 'current.json'));
+  if (!pointer?.path || !pointer?.commit) return null;
+  const resolved = path.resolve(pointer.path);
+  const runtimeRoot = path.resolve(resolveAlgorithmRuntimeRoot());
+  const relative = path.relative(runtimeRoot, resolved);
+  const isManagedRuntime = relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+  const isDevelopmentRoot = resolved === path.resolve(appRootDev);
+  if ((!isManagedRuntime && !isDevelopmentRoot) || !fs.existsSync(path.join(resolved, 'main.py'))) return null;
+  let manifest = null;
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(resolved, 'stockmaster-candidate.json'), 'utf8'));
+  } catch { /* legacy runtimes do not have merge metadata */ }
+  return {
+    ...pointer,
+    path: resolved,
+    mergePolicy: pointer.mergePolicy || manifest?.mergeSummary?.policy || '',
+    localBaselineCommit: pointer.localBaselineCommit || manifest?.localBaselineCommit || '',
+    localMergedPaths: pointer.localMergedPaths || manifest?.mergeSummary?.mergedPaths || [],
+    localConflictPaths: pointer.localConflictPaths || manifest?.mergeSummary?.conflictPaths || [],
+  };
+}
+
+function startAlgorithmUpdateMonitor() {
+  if (algorithmUpdateMonitor || process.argv.includes('--test') || !(app.isPackaged || process.env.STOCKMASTER_ENABLE_ALGORITHM_MONITOR === '1')) return;
+  const currentCommit = backendRuntimeContext?.algorithmCommit || resolveStockMasterBaselineCommit();
+  if (!currentCommit) return;
+  algorithmUpdateMonitor = createAlgorithmUpdateMonitor({
+    currentCommit,
+    appliedCommit: backendRuntimeContext?.algorithmAppliedCommit || '',
+    lastAppliedAt: backendRuntimeContext?.algorithmAppliedAt || '',
+    mergePolicy: backendRuntimeContext?.algorithmMergePolicy || '',
+    localBaselineCommit: backendRuntimeContext?.algorithmLocalBaselineCommit || '',
+    localMergedPaths: backendRuntimeContext?.algorithmLocalMergedPaths || [],
+    localConflictPaths: backendRuntimeContext?.algorithmLocalConflictPaths || [],
+    fetchCompare: fetchUpstreamCompare,
+    classify: (paths) => classifyChangedPaths(paths, DEFAULT_POLICY),
+    onStateChanged: (state) => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('algorithm-update:state', state);
+    },
+    onAvailable: async ({ headCommit, classification }) => {
+      if (!mainWindow || mainWindow.isDestroyed() || headCommit === lastAlgorithmUpdatePromptCommit) return;
+      lastAlgorithmUpdatePromptCommit = headCommit;
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: 'StockMaster 后端算法更新',
+        message: '检测到上游后端分析算法有更新。',
+        detail: `候选提交：${headCommit.slice(0, 8)}\n涉及文件：${classification.eligiblePaths.join(', ')}\n当前版本不会自动覆盖，是否打开更新说明？`,
+        buttons: ['稍后', '查看变更', '立即同步'],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      if (result.response === 1) {
+        const activeCommit = algorithmUpdateMonitor?.getState().currentCommit || currentCommit;
+        await shell.openExternal(`https://github.com/ZhuLinsen/daily_stock_analysis/compare/${activeCommit}...${headCommit}`);
+      } else if (result.response === 2) {
+        void syncAlgorithmUpdate().catch((error) => logLine(`[algorithm-update] sync failed: ${error.message}`));
+      }
+    },
+  });
+  void algorithmUpdateMonitor.start().catch((error) => logLine(`[algorithm-update] initial check failed: ${error.message}`));
+  logLine('[algorithm-update] monitor started with 60s interval and failure backoff');
+}
+
+function stopAlgorithmUpdateMonitor() {
+  algorithmUpdateMonitor?.stop();
+  algorithmUpdateMonitor = null;
 }
 
 const isWindows = process.platform === 'win32';
@@ -50,6 +151,135 @@ const MAC_DESKTOP_SYSTEM_PATH_ENTRIES = Object.freeze([
   '/usr/sbin',
   '/sbin',
 ]);
+
+function syncDevelopmentWebAssets({ repoRoot = appRootDev, runtimeRoot, enabled = true } = {}) {
+  if (!enabled || !runtimeRoot) return false;
+  const sourceStatic = path.resolve(repoRoot, 'static');
+  const targetStatic = path.resolve(runtimeRoot, 'static');
+  if (sourceStatic === targetStatic || !fs.existsSync(path.join(sourceStatic, 'index.html'))) return false;
+  fs.mkdirSync(targetStatic, { recursive: true });
+  fs.cpSync(sourceStatic, targetStatic, { recursive: true, force: true });
+  return true;
+}
+
+const STOCKMASTER_BACKEND_ADAPTER_FILES = Object.freeze([
+  path.join('api', 'app.py'),
+  path.join('api', 'v1', 'endpoints', 'analysis.py'),
+  path.join('api', 'v1', 'endpoints', 'history.py'),
+  path.join('api', 'v1', 'endpoints', 'stocks.py'),
+  path.join('api', 'v1', 'endpoints', 'system_config.py'),
+  path.join('api', 'v1', 'schemas', 'analysis.py'),
+  path.join('api', 'v1', 'schemas', 'history.py'),
+  path.join('api', 'v1', 'schemas', 'stocks.py'),
+  path.join('api', 'v1', 'schemas', 'system_config.py'),
+  path.join('src', 'services', 'history_service.py'),
+  path.join('src', 'services', 'analysis_service.py'),
+  path.join('src', 'services', 'market_dashboard_service.py'),
+  path.join('src', 'services', 'stock_service.py'),
+  path.join('src', 'services', 'system_config_service.py'),
+  // StockMaster-owned backend requirements. After an algorithm update these
+  // paths use a persisted upstream baseline for three-way, local-wins replay.
+  path.join('main.py'),
+  path.join('src', 'core', 'pipeline.py'),
+  path.join('src', 'core', 'config_profiles.py'),
+  path.join('src', 'core', 'pipeline_helpers.py'),
+  path.join('src', 'core', 'config_registry.py'),
+  path.join('src', 'core', 'config_registry_categories.py'),
+  path.join('src', 'core', 'market_review.py'),
+  path.join('src', 'core', 'market_review_runtime.py'),
+  path.join('src', 'core', 'trading_calendar.py'),
+  path.join('src', 'config.py'),
+  path.join('src', 'analyzer.py'),
+  path.join('src', 'analysis_text_normalization.py'),
+  path.join('src', 'market_analyzer.py'),
+  path.join('src', 'storage.py'),
+  path.join('src', 'storage_time.py'),
+  path.join('src', 'search_service.py'),
+  path.join('src', 'search_provider_base.py'),
+  path.join('src', 'utils', 'data_processing.py'),
+  path.join('src', 'services', 'analysis_context_builder.py'),
+  path.join('src', 'services', 'analysis_retry_context.py'),
+  path.join('src', 'services', 'a_share_market_temperature.py'),
+  path.join('src', 'services', 'a_share_structured_intel.py'),
+  path.join('src', 'services', 'chart_pattern_service.py'),
+  path.join('src', 'services', 'intel_context_status.py'),
+  path.join('src', 'services', 'provider_chain_diagnostics.py'),
+  path.join('src', 'services', 'runtime_config_validation.py'),
+  path.join('src', 'services', 'run_diagnostics.py'),
+  path.join('src', 'services', 'task_queue.py'),
+  path.join('src', 'stock_analyzer.py'),
+  path.join('src', 'llm', 'backend_factory.py'),
+  path.join('src', 'llm', 'litellm_backend.py'),
+  path.join('data_provider', 'base.py'),
+  path.join('data_provider', 'baostock_fetcher.py'),
+  path.join('data_provider', 'a_share_valuation.py'),
+  path.join('data_provider', 'baostock_fundamental_adapter.py'),
+  path.join('data_provider', 'chip_distribution.py'),
+  path.join('data_provider', 'fundamental_adapter.py'),
+  path.join('data_provider', 'provider_daily_cache.py'),
+  path.join('data_provider', 'realtime_types.py'),
+  path.join('data_provider', 'akshare_fetcher.py'),
+  path.join('data_provider', 'efinance_fetcher.py'),
+]);
+
+function syncDevelopmentBackendAdapters({ repoRoot = appRootDev, runtimeRoot, enabled = true } = {}) {
+  if (!enabled || !runtimeRoot) return false;
+  const resolvedRepoRoot = path.resolve(repoRoot);
+  const resolvedRuntimeRoot = path.resolve(runtimeRoot);
+  if (resolvedRepoRoot === resolvedRuntimeRoot) return false;
+
+  for (const relativePath of STOCKMASTER_BACKEND_ADAPTER_FILES) {
+    const sourcePath = path.resolve(resolvedRepoRoot, relativePath);
+    const targetPath = path.resolve(resolvedRuntimeRoot, relativePath);
+    if (!fs.existsSync(sourcePath)) {
+      throw new Error(`StockMaster backend adapter is missing: ${relativePath}`);
+    }
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.copyFileSync(sourcePath, targetPath);
+  }
+  return true;
+}
+
+async function replayDevelopmentBackendAdapters({ repoRoot = appRootDev, runtimeRoot, enabled = true } = {}) {
+  if (!enabled || !runtimeRoot) return { applied: false, strategy: 'disabled' };
+  const manifestPath = path.join(path.resolve(runtimeRoot), 'stockmaster-candidate.json');
+  let manifest;
+  try {
+    manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf8'));
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    return {
+      applied: syncDevelopmentBackendAdapters({ repoRoot, runtimeRoot, enabled }),
+      strategy: 'legacy-copy',
+    };
+  }
+  if (manifest?.mergeSummary?.policy !== 'three-way-local-wins') {
+    return {
+      applied: syncDevelopmentBackendAdapters({ repoRoot, runtimeRoot, enabled }),
+      strategy: 'legacy-copy',
+    };
+  }
+  const mergeInputRoot = path.join(path.resolve(runtimeRoot), '.stockmaster-merge');
+  const summary = await applyLocalOverlayPolicy({
+    candidateRoot: runtimeRoot,
+    localRoot: repoRoot,
+    localOverlayPaths: STOCKMASTER_BACKEND_ADAPTER_FILES.map((file) => file.split(path.sep).join('/')),
+    localBaselineRoot: path.join(mergeInputRoot, 'baseline'),
+    localUpstreamRoot: path.join(mergeInputRoot, 'upstream'),
+    localChangeStatuses: manifest.localChangeStatuses || {},
+    localRenameTargets: manifest.localRenameTargets || {},
+  });
+  const updatedManifest = {
+    ...manifest,
+    mergeSummary: summary,
+    lastLocalReplayAt: new Date().toISOString(),
+  };
+  const temporaryManifestPath = `${manifestPath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.promises.writeFile(temporaryManifestPath, `${JSON.stringify(updatedManifest, null, 2)}\n`, 'utf8');
+  await fs.promises.rename(temporaryManifestPath, manifestPath);
+  return { applied: true, strategy: 'three-way-local-wins', summary };
+}
+
 const DESKTOP_BACKEND_PATH_DELIMITER = isWindows ? ';' : ':';
 const DESKTOP_UPDATE_RUNTIME_RELATIVE_FILES = Object.freeze([
   '.env',
@@ -880,6 +1110,8 @@ function buildBackendEnvironment({
     DSA_DESKTOP_MODE: 'true',
     ENV_FILE: envFile,
     DATABASE_PATH: dbPath,
+    STOCKMASTER_TASK_STATE_PATH: path.join(path.dirname(dbPath), 'unfinished-analysis-tasks.json'),
+    STOCKMASTER_SHARED_FETCHER_CACHE: 'true',
     LOG_DIR: logDir,
     PYTHONUTF8: '1',
     PYTHONIOENCODING: 'utf-8',
@@ -1166,7 +1398,7 @@ function waitForHealth(
   });
 }
 
-function startBackend({ port, envFile, dbPath, logDir, host = null }) {
+function startBackend({ port, envFile, dbPath, logDir, host = null, sourceRoot = '' }) {
   const backendPath = resolveBackendPath();
   backendStartError = null;
   const launchStartedAt = Date.now();
@@ -1182,7 +1414,7 @@ function startBackend({ port, envFile, dbPath, logDir, host = null }) {
   let launchCommand = '';
   let launchCwd = '';
 
-  if (backendPath) {
+  if (backendPath && !sourceRoot) {
     if (!fs.existsSync(backendPath)) {
       throw new Error(`Backend executable not found: ${backendPath}`);
     }
@@ -1197,11 +1429,13 @@ function startBackend({ port, envFile, dbPath, logDir, host = null }) {
     });
   } else {
     const pythonPath = resolvePythonPath();
-    const scriptPath = path.join(appRootDev, 'main.py');
+    const runtimeSourceRoot = sourceRoot ? path.resolve(sourceRoot) : appRootDev;
+    const scriptPath = path.join(runtimeSourceRoot, 'main.py');
+    if (!fs.existsSync(scriptPath)) throw new Error(`Backend source entry not found: ${scriptPath}`);
     const pythonArgs = ['-X', 'utf8', scriptPath, ...args];
     launchMode = 'development';
     launchCommand = formatCommand(pythonPath, pythonArgs);
-    launchCwd = appRootDev;
+    launchCwd = runtimeSourceRoot;
     backendProcess = spawn(pythonPath, pythonArgs, {
       env,
       cwd: launchCwd,
@@ -1329,6 +1563,260 @@ function stopBackend() {
   }, 3000);
 
   return waitAndClear();
+}
+
+function readBackendTaskState() {
+  if (!backendRuntimeContext?.connectHost || !backendRuntimeContext?.port) {
+    return Promise.reject(new Error('后端运行信息不可用，无法安全同步。'));
+  }
+  const url = new URL(buildBackendUrl(
+    backendRuntimeContext.connectHost,
+    backendRuntimeContext.port,
+    '/api/v1/analysis/tasks',
+  ));
+  url.searchParams.set('limit', '100');
+  return new Promise((resolve, reject) => {
+    const request = http.get(url, (response) => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => { body += chunk; });
+      response.on('end', () => {
+        if (response.statusCode !== 200) {
+          reject(new Error(`无法确认分析任务状态，HTTP ${response.statusCode}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(body));
+        } catch {
+          reject(new Error('分析任务状态返回格式无效'));
+        }
+      });
+    });
+    request.setTimeout(5000, () => request.destroy(new Error('检查分析任务状态超时')));
+    request.on('error', reject);
+  });
+}
+
+async function assertBackendIdleForAlgorithmSync() {
+  const payload = await readBackendTaskState();
+  const tasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
+  const active = tasks.filter((task) => ['pending', 'processing', 'cancel_requested'].includes(task?.status));
+  if (active.length) throw new Error(`当前有 ${active.length} 个分析任务尚未结束，请完成或停止任务后再同步。`);
+}
+
+async function healthCheckCurrentBackend() {
+  const url = buildBackendUrl(
+    backendRuntimeContext.connectHost,
+    backendRuntimeContext.port,
+    '/api/health',
+  );
+  try {
+    await waitForHealth(
+      url,
+      60_000,
+      250,
+      1500,
+      () => {
+        if (backendStartError) return `backend start error: ${backendStartError.message}`;
+        if (!backendProcess) return 'backend process is unavailable';
+        if (backendProcess.exitCode !== null) return `backend exited with code ${backendProcess.exitCode}`;
+        return null;
+      },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function syncAlgorithmUpdate() {
+  if (algorithmSyncInFlight) return algorithmSyncInFlight;
+  algorithmSyncInFlight = (async () => {
+    if (!algorithmUpdateMonitor) throw new Error('算法更新监控尚未启用。');
+    const initial = algorithmUpdateMonitor.getState();
+    if (!initial.algorithmUpdateAvailable || !initial.candidateCommit) throw new Error('当前没有可同步的后端算法更新。');
+    if (app.isPackaged) throw new Error('当前安装包使用编译后端，选择性算法同步将在正式安装包阶段启用。请先使用本地试运行版同步。');
+    if (!backendRuntimeContext) throw new Error('后端运行信息尚未准备完成。');
+
+    const commit = initial.candidateCommit;
+    const eligiblePaths = [...(initial.candidatePaths || [])];
+    const dependencyPaths = [...(initial.candidateDependencyPaths || [])];
+    const removedPaths = [...(initial.candidateRemovedPaths || [])];
+    const removedSet = new Set(removedPaths);
+    const downloadPaths = [...eligiblePaths, ...dependencyPaths].filter((file) => !removedSet.has(file));
+    const stagingRoot = path.join(app.getPath('userData'), 'stockmaster-algorithm-update', 'staging');
+    const operationRoot = path.join(stagingRoot, `sync-${commit.slice(0, 12)}-${Date.now()}`);
+    const archiveRoot = path.join(operationRoot, 'archive');
+    const localBaselineArchiveRoot = path.join(operationRoot, 'local-baseline');
+    const localUpstreamArchiveRoot = path.join(operationRoot, 'local-upstream');
+    const currentRoot = path.resolve(backendRuntimeContext.sourceRoot || '');
+    if (
+      !backendRuntimeContext.sourceRoot
+      || !fs.existsSync(path.join(currentRoot, 'main.py'))
+      || !fs.existsSync(path.join(currentRoot, 'server.py'))
+    ) {
+      throw new Error('当前后端源码目录已失效，请重启 StockMaster 后再同步。');
+    }
+
+    try {
+      await assertBackendIdleForAlgorithmSync();
+      algorithmUpdateMonitor.setSyncState({ syncStatus: 'downloading', syncMessage: '正在下载已确认的后端算法文件' });
+      await fs.promises.mkdir(archiveRoot, { recursive: true });
+      await downloadUpstreamFiles({ commit, paths: downloadPaths, destinationRoot: archiveRoot });
+
+      const localBaselineCommit = resolveStockMasterBaselineCommit();
+      if (!/^[0-9a-f]{40}$/i.test(localBaselineCommit)) {
+        throw new Error('StockMaster 本地补丁缺少有效的上游基线提交，已停止同步以避免覆盖本地强需求。');
+      }
+      const localOverlayPaths = STOCKMASTER_BACKEND_ADAPTER_FILES
+        .map((file) => file.split(path.sep).join('/'));
+      const localOverlaySet = new Set(localOverlayPaths);
+      const cumulativeCompare = await fetchUpstreamCompare({ currentCommit: localBaselineCommit });
+      if (cumulativeCompare.headCommit && cumulativeCompare.headCommit !== commit) {
+        throw new Error('上游 main 在确认后又发生变化，请重新检查更新后再同步。');
+      }
+      if (cumulativeCompare.filesTruncated) {
+        throw new Error('上游累计变更超过安全合并上限，请先人工刷新 StockMaster 上游基线。');
+      }
+      const localChangeStatuses = {};
+      const localRenameTargets = {};
+      for (const file of cumulativeCompare.changedFiles || []) {
+        if (file.status === 'renamed' && localOverlaySet.has(file.previousPath)) {
+          localChangeStatuses[file.previousPath] = 'renamed';
+          localRenameTargets[file.previousPath] = file.path;
+        } else if (localOverlaySet.has(file.path)) {
+          localChangeStatuses[file.path] = file.status;
+        }
+      }
+      const localBaselinePaths = [];
+      const localUpstreamPaths = [];
+      for (const [file, status] of Object.entries(localChangeStatuses)) {
+        if (['modified', 'removed', 'renamed'].includes(status)) localBaselinePaths.push(file);
+        if (status === 'renamed') localUpstreamPaths.push(localRenameTargets[file]);
+        else if (['modified', 'added', 'copied'].includes(status)) localUpstreamPaths.push(file);
+      }
+      if (localBaselinePaths.length) {
+        await fs.promises.mkdir(localBaselineArchiveRoot, { recursive: true });
+        await downloadUpstreamFiles({
+          commit: localBaselineCommit,
+          paths: localBaselinePaths,
+          destinationRoot: localBaselineArchiveRoot,
+        });
+      }
+      if (localUpstreamPaths.length) {
+        await fs.promises.mkdir(localUpstreamArchiveRoot, { recursive: true });
+        await downloadUpstreamFiles({
+          commit,
+          paths: localUpstreamPaths,
+          destinationRoot: localUpstreamArchiveRoot,
+        });
+      }
+
+      algorithmUpdateMonitor.setSyncState({ syncStatus: 'validating', syncMessage: '正在三方合并上游算法与 StockMaster 本地强需求' });
+      logLine(
+        `[algorithm-update] staging current runtime=${currentRoot}; `
+        + `main.py=${fs.existsSync(path.join(currentRoot, 'main.py'))}; `
+        + `server.py=${fs.existsSync(path.join(currentRoot, 'server.py'))}`,
+      );
+      const staged = await stageBackendCandidate({
+        currentRoot,
+        archiveRoot,
+        stagingRoot: operationRoot,
+        eligiblePaths,
+        dependencyPaths,
+        removedPaths,
+        localRoot: appRootDev,
+        localOverlayPaths,
+        localBaselineRoot: localBaselineArchiveRoot,
+        localUpstreamRoot: localUpstreamArchiveRoot,
+        localChangeStatuses,
+        localRenameTargets,
+        localBaselineCommit,
+        candidateCommit: commit,
+      });
+      logLine(
+        `[algorithm-update] candidate ready=${staged.candidateRoot}; `
+        + `main.py=${fs.existsSync(path.join(staged.candidateRoot, 'main.py'))}; `
+        + `server.py=${fs.existsSync(path.join(staged.candidateRoot, 'server.py'))}`,
+      );
+      logLine(
+        `[algorithm-update] merge policy=${staged.mergeSummary.policy}; `
+        + `merged=${staged.mergeSummary.mergedPaths.length}; `
+        + `local_conflicts=${staged.mergeSummary.conflictPaths.length}; `
+        + `conflict_paths=${staged.mergeSummary.conflictPaths.join(',') || 'none'}`,
+      );
+      await fs.promises.mkdir(path.join(operationRoot, 'validation-data'), { recursive: true });
+      await fs.promises.mkdir(path.join(operationRoot, 'validation-logs'), { recursive: true });
+      const validationEnv = buildBackendEnvironment({
+        ...backendRuntimeContext,
+        dbPath: path.join(operationRoot, 'validation-data', 'stock_analysis.db'),
+        logDir: path.join(operationRoot, 'validation-logs'),
+      });
+      await validatePythonCandidate({
+        candidateRoot: staged.candidateRoot,
+        changedPaths: [...new Set([
+          ...eligiblePaths,
+          ...dependencyPaths,
+          ...localOverlayPaths.map((file) => localRenameTargets[file] || file),
+        ])].filter((file) => !removedSet.has(file) || staged.mergeSummary.conflictPaths.includes(file)),
+        pythonPath: resolvePythonPath(),
+        env: validationEnv,
+      });
+
+      algorithmUpdateMonitor.setSyncState({ syncStatus: 'activating', syncMessage: '正在切换后端并执行健康检查' });
+      const runtimeRoot = resolveAlgorithmRuntimeRoot();
+      await ensureCurrentPointer({
+        runtimeRoot,
+        pointer: { commit: initial.currentCommit, path: currentRoot },
+      });
+      const pointer = await activateCandidate({
+        runtimeRoot,
+        commit,
+        candidatePath: staged.candidateRoot,
+        stopBackend,
+        startBackend: async (sourceRoot) => {
+          activeBackendSourceRoot = sourceRoot;
+          backendRuntimeContext.sourceRoot = sourceRoot;
+          startBackend({ ...backendRuntimeContext, sourceRoot });
+        },
+        healthCheck: healthCheckCurrentBackend,
+        metadata: {
+          mergePolicy: staged.mergeSummary.policy,
+          localBaselineCommit,
+          localMergedPaths: staged.mergeSummary.mergedPaths,
+          localConflictPaths: staged.mergeSummary.conflictPaths,
+        },
+      });
+      activeBackendSourceRoot = pointer.path;
+      backendRuntimeContext.sourceRoot = pointer.path;
+      backendRuntimeContext.algorithmCommit = commit;
+      backendRuntimeContext.algorithmAppliedCommit = commit;
+      backendRuntimeContext.algorithmAppliedAt = pointer.activatedAt;
+      const state = algorithmUpdateMonitor.markApplied(commit, {
+        localBaselineCommit,
+        mergeSummary: staged.mergeSummary,
+      });
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        await mainWindow.loadURL(buildMainPageUrl(
+          backendRuntimeContext.port,
+          Date.now(),
+          backendRuntimeContext.connectHost,
+        ));
+      }
+      return state;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      algorithmUpdateMonitor.setSyncState({ syncStatus: 'failed', syncMessage: message });
+      throw error;
+    } finally {
+      try { await fs.promises.rm(operationRoot, { recursive: true, force: true }); } catch { /* best effort staging cleanup */ }
+    }
+  })();
+  try {
+    return await algorithmSyncInFlight;
+  } finally {
+    algorithmSyncInFlight = null;
+  }
 }
 
 function resolveDesktopVersion() {
@@ -1906,10 +2394,12 @@ async function createWindow() {
   logStartup('createWindow started');
 
   mainWindow = new BrowserWindow({
+    title: 'StockMaster',
     width: 1200,
     height: 800,
     minWidth: 960,
     minHeight: 640,
+    autoHideMenuBar: true,
     backgroundColor: resolveWindowBackgroundColor(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -1918,6 +2408,7 @@ async function createWindow() {
       additionalArguments: [`--dsa-desktop-version=${app.getVersion()}`],
     },
   });
+  mainWindow.removeMenu?.();
   logStartup('BrowserWindow created');
 
   const loadingPath = path.join(__dirname, 'renderer', 'loading.html');
@@ -1977,9 +2468,53 @@ async function createWindow() {
 
   const dbPath = path.join(appDir, 'data', 'stock_analysis.db');
   const logDir = path.join(appDir, 'logs');
+  const activeRuntime = await resolveActiveAlgorithmRuntime();
+  if (activeRuntime?.path && process.env.STOCKMASTER_SYNC_DEV_UI === '1') {
+    try {
+      if (syncDevelopmentWebAssets({ runtimeRoot: activeRuntime.path })) {
+        logStartup(`Synced local Web UI into active algorithm runtime=${activeRuntime.path}`);
+      }
+      const replayed = await replayDevelopmentBackendAdapters({ runtimeRoot: activeRuntime.path });
+      if (replayed.applied) {
+        logStartup(
+          `Synced StockMaster backend overlays into active algorithm runtime=${activeRuntime.path}; `
+          + `strategy=${replayed.strategy}; conflicts=${replayed.summary?.conflictPaths?.length || 0}`,
+        );
+      }
+    } catch (error) {
+      logStartup(`Local StockMaster overlay sync failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  activeBackendSourceRoot = activeRuntime?.path || '';
+  backendRuntimeContext = {
+    port,
+    envFile: envPath,
+    dbPath,
+    logDir,
+    host: backendBindHost,
+    connectHost: backendConnectHost,
+    algorithmCommit: activeRuntime?.commit || resolveStockMasterBaselineCommit(),
+    algorithmAppliedCommit: activeRuntime?.commit || '',
+    algorithmAppliedAt: activeRuntime?.activatedAt || '',
+    algorithmMergePolicy: activeRuntime?.mergePolicy || '',
+    algorithmLocalBaselineCommit: activeRuntime?.localBaselineCommit || '',
+    algorithmLocalMergedPaths: activeRuntime?.localMergedPaths || [],
+    algorithmLocalConflictPaths: activeRuntime?.localConflictPaths || [],
+  };
 
   try {
-    const launchInfo = startBackend({ port, envFile: envPath, dbPath, logDir, host: backendBindHost });
+    const launchInfo = startBackend({
+      port,
+      envFile: envPath,
+      dbPath,
+      logDir,
+      host: backendBindHost,
+      sourceRoot: activeBackendSourceRoot,
+    });
+    if (!app.isPackaged) {
+      activeBackendSourceRoot = launchInfo.cwd;
+      backendRuntimeContext.sourceRoot = launchInfo.cwd;
+    }
     logStartup(`Backend launch mode=${launchInfo.mode}`);
     logStartup(`Backend launch command=${launchInfo.command}`);
     logStartup(`Backend launch cwd=${launchInfo.cwd}`);
@@ -2061,7 +2596,10 @@ async function createWindow() {
     logStartup(`Main page loadURL resolved in ${Date.now() - mainPageStartedAt}ms url=${mainPageUrl}`);
     logStartup(`Main UI loaded in ${Date.now() - startupStartedAt}ms`);
     if (!restoreFailed) {
-      void performDesktopUpdateCheck({ notify: true });
+      // Startup only checks the pinned upstream algorithm baseline. Desktop
+      // release checks remain an explicit Settings-page action so a local
+      // StockMaster run never prompts for a full-stack GitHub upgrade.
+      startAlgorithmUpdateMonitor();
     }
   } catch (error) {
     logStartup(`Startup failed while waiting for health: ${String(error)}`);
@@ -2086,7 +2624,20 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  stopAlgorithmUpdateMonitor();
   void stopBackend();
+});
+ipcMain.handle('algorithm-update:get-state', () => algorithmUpdateMonitor?.getState() || { status: 'disabled' });
+ipcMain.handle('algorithm-update:check-now', async () => {
+  if (!algorithmUpdateMonitor) return { status: 'disabled' };
+  await algorithmUpdateMonitor.checkNow();
+  return algorithmUpdateMonitor.getState();
+});
+ipcMain.handle('algorithm-update:sync', async (event) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event?.sender !== mainWindow.webContents) {
+    throw new Error('算法同步请求来源无效。');
+  }
+  return syncAlgorithmUpdate();
 });
 
 module.exports = {
@@ -2096,6 +2647,7 @@ module.exports = {
   LATEST_RELEASE_API_URL,
   RELEASES_PAGE_URL,
   DESKTOP_UPDATE_RUNTIME_RELATIVE_FILES,
+  STOCKMASTER_BACKEND_ADAPTER_FILES,
   UPDATE_MODE,
   UPDATE_STATUS,
   buildUpdateState,
@@ -2122,6 +2674,9 @@ module.exports = {
   renderDesktopShareImage,
   restorePackagedRuntimeStateFromBackup,
   sanitizeReleaseUrl,
+  syncDevelopmentBackendAdapters,
+  replayDevelopmentBackendAdapters,
+  syncDevelopmentWebAssets,
   startBackend,
   stopBackend,
   __getBackendProcessForTest() {

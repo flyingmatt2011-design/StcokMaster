@@ -31,6 +31,21 @@ export const ReportDetails: React.FC<ReportDetailsProps> = ({
     snapshot: false,
   });
   const copyResetTimerRef = useRef<Partial<Record<JsonPanel, number>>>({});
+  const contextText = reportLanguage === 'en'
+    ? {
+        title: 'Additional Data Context',
+        valuation: 'Historical Valuation Percentile',
+        patterns: 'Deterministic Chart Patterns',
+        noPattern: 'No qualifying pattern detected',
+        contextOnly: 'Context only · excluded from the existing score',
+      }
+    : {
+        title: '补充数据上下文',
+        valuation: '历史估值分位',
+        patterns: '确定性图形形态',
+        noPattern: '未识别到满足阈值的典型形态',
+        contextOnly: '仅作上下文 · 不参与现有评分',
+      };
 
   useEffect(() => {
     return () => {
@@ -43,7 +58,13 @@ export const ReportDetails: React.FC<ReportDetailsProps> = ({
     };
   }, []);
 
-  if (!details?.rawResult && !details?.contextSnapshot && !recordId) {
+  if (
+    !details?.rawResult
+    && !details?.contextSnapshot
+    && !details?.valuationHistory
+    && !details?.chartPatternContext
+    && !recordId
+  ) {
     return null;
   }
 
@@ -98,6 +119,41 @@ export const ReportDetails: React.FC<ReportDetailsProps> = ({
         title={text.traceability}
         className="mb-3"
       />
+
+      {(details?.valuationHistory?.metrics || details?.chartPatternContext) ? (
+        <div className="home-divider mb-3 border-b pb-3">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-semibold text-foreground">{contextText.title}</p>
+            <span className="text-[11px] text-muted-text">{contextText.contextOnly}</span>
+          </div>
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            {details?.valuationHistory?.metrics ? (
+              <div className="rounded-lg border border-subtle p-3">
+                <p className="label-uppercase">{contextText.valuation}</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(['pe', 'pb', 'ps'] as const).map((metric) => {
+                    const value = details.valuationHistory?.metrics?.[metric];
+                    if (!value || value.percentile === undefined) return null;
+                    return (
+                      <span key={metric} className="home-accent-chip px-2 py-1 font-mono text-xs">
+                        {metric.toUpperCase()} {value.percentile.toFixed(1)}%
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+            {details?.chartPatternContext ? (
+              <div className="rounded-lg border border-subtle p-3">
+                <p className="label-uppercase">{contextText.patterns}</p>
+                <p className="mt-2 text-sm leading-5 text-foreground">
+                  {details.chartPatternContext.summary || contextText.noPattern}
+                </p>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       {/* Record ID */}
       {recordId && (

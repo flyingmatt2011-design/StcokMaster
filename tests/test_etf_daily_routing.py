@@ -86,6 +86,7 @@ def test_efinance_sh_etf_uses_eastmoney_quote_id_mode() -> None:
     assert kwargs["klt"] == 101
     assert kwargs["fqt"] == 1
     assert {"ma5", "ma10", "ma20"}.issubset(df.columns)
+    assert df["volume"].tolist() == [100000, 110000, 120000, 130000, 140000]
 
 
 def test_efinance_sz_etf_uses_eastmoney_quote_id_mode() -> None:

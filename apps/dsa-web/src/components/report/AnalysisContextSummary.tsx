@@ -436,7 +436,7 @@ export const AnalysisContextSummary: React.FC<AnalysisContextSummaryProps> = ({
             </div>
           ) : null}
 
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+          <div className="stockmaster-context-grid grid grid-cols-1 gap-2 md:grid-cols-2">
             {overview.blocks.map((block) => {
               const style = STATUS_STYLE[block.status] || STATUS_STYLE.missing;
               const hasMissingReasons = Boolean(block.missingReasons?.length);

@@ -219,6 +219,50 @@ def _schedule_stock_index_background_refresh(app: FastAPI, reason: str) -> None:
     )
 
 
+async def _prewarm_daily_market_context_in_background() -> None:
+    """Prepare today's A-share market snapshot before the first desktop analysis."""
+    try:
+        await asyncio.sleep(3)
+
+        def _prewarm() -> bool:
+            from src.config import get_config
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.core.trading_calendar import get_effective_trading_date
+
+            config = get_config()
+            if not bool(getattr(config, "daily_market_context_enabled", True)):
+                return False
+            if getattr(config, "market_review_enabled", None) is not True:
+                return False
+            pipeline = StockAnalysisPipeline(
+                config=config,
+                query_source="desktop_startup_prewarm",
+                daily_market_context_enabled=True,
+            )
+            context = pipeline._load_daily_market_context(
+                "cn",
+                target_date=get_effective_trading_date("cn"),
+            )
+            return context is not None
+
+        warmed = await run_in_threadpool(_prewarm)
+        logger.info("[market-context] desktop startup prewarm completed: available=%s", warmed)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - startup prewarm must stay best-effort.
+        logger.warning("[market-context] desktop startup prewarm failed: %s", exc)
+
+
+def _schedule_daily_market_context_prewarm(app: FastAPI) -> None:
+    if os.getenv("STOCKMASTER_SHARED_FETCHER_CACHE", "").strip().lower() not in {
+        "1", "true", "yes", "on",
+    }:
+        return
+    app.state.daily_market_context_prewarm_task = asyncio.create_task(
+        _prewarm_daily_market_context_in_background()
+    )
+
+
 def _load_runtime_scheduler_args() -> dict:
     raw_value = os.getenv(RUNTIME_SCHEDULER_ARGS_ENV)
     if not raw_value:
@@ -289,6 +333,7 @@ async def app_lifespan(app: FastAPI):
         runtime_scheduler=app.state.runtime_scheduler_service,
     )
     _schedule_stock_index_background_refresh(app, "startup")
+    _schedule_daily_market_context_prewarm(app)
     try:
         yield
     finally:
@@ -297,6 +342,11 @@ async def app_lifespan(app: FastAPI):
             refresh_task.cancel()
             with suppress(asyncio.CancelledError):
                 await refresh_task
+        prewarm_task = getattr(app.state, "daily_market_context_prewarm_task", None)
+        if prewarm_task is not None and not prewarm_task.done():
+            prewarm_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await prewarm_task
         if hasattr(app.state, "system_config_service"):
             delattr(app.state, "system_config_service")
         runtime_scheduler = getattr(app.state, "runtime_scheduler_service", None)

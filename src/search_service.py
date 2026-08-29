@@ -17,12 +17,9 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import List, Dict, Any, Optional, Tuple
-from itertools import cycle
 from urllib.parse import parse_qsl, unquote, urlparse
 import requests
 from newspaper import Article, Config
@@ -45,6 +42,7 @@ from src.data.stock_mapping import (
     foreign_stock_english_aliases,
 )
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
+from src.search_provider_base import BaseSearchProvider, SearchResponse, SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -230,184 +228,6 @@ def fetch_url_content(url: str, timeout: int = 5) -> str:
         logger.debug(f"Fetch content failed for {url}: {e}")
 
     return ""
-
-
-@dataclass
-class SearchResult:
-    """搜索结果数据类"""
-    title: str
-    snippet: str  # 摘要
-    url: str
-    source: str  # 来源网站
-    published_date: Optional[str] = None
-    relevance_score: Optional[int] = None
-    relevance_category: Optional[str] = None
-    relevance_reasons: Optional[List[str]] = None
-    
-    def to_text(self) -> str:
-        """转换为文本格式"""
-        date_str = f" ({self.published_date})" if self.published_date else ""
-        relevance_parts: List[str] = []
-        if self.relevance_category:
-            relevance_parts.append(self.relevance_category)
-        if self.relevance_score is not None:
-            relevance_parts.append(f"score={self.relevance_score}")
-        if self.relevance_reasons:
-            relevance_parts.append(f"依据: {'；'.join(self.relevance_reasons[:3])}")
-        relevance_str = f"\n关联度: {'; '.join(relevance_parts)}" if relevance_parts else ""
-        return f"【{self.source}】{self.title}{date_str}\n{self.snippet}{relevance_str}"
-
-
-@dataclass 
-class SearchResponse:
-    """搜索响应"""
-    query: str
-    results: List[SearchResult]
-    provider: str  # 使用的搜索引擎
-    success: bool = True
-    error_message: Optional[str] = None
-    search_time: float = 0.0  # 搜索耗时（秒）
-    
-    def to_context(self, max_results: int = 5) -> str:
-        """将搜索结果转换为可用于 AI 分析的上下文"""
-        if not self.success or not self.results:
-            return f"搜索 '{self.query}' 未找到相关结果。"
-        
-        lines = [f"【{self.query} 搜索结果】（来源：{self.provider}）"]
-        for i, result in enumerate(self.results[:max_results], 1):
-            lines.append(f"\n{i}. {result.to_text()}")
-        
-        return "\n".join(lines)
-
-
-class BaseSearchProvider(ABC):
-    """搜索引擎基类"""
-    
-    def __init__(self, api_keys: List[str], name: str):
-        """
-        初始化搜索引擎
-        
-        Args:
-            api_keys: API Key 列表（支持多个 key 负载均衡）
-            name: 搜索引擎名称
-        """
-        self._api_keys = api_keys
-        self._name = name
-        self._key_cycle = cycle(api_keys) if api_keys else None
-        self._key_usage: Dict[str, int] = {key: 0 for key in api_keys}
-        self._key_errors: Dict[str, int] = {key: 0 for key in api_keys}
-        self._state_lock = threading.RLock()
-    
-    @property
-    def name(self) -> str:
-        return self._name
-    
-    @property
-    def is_available(self) -> bool:
-        """检查是否有可用的 API Key"""
-        return bool(self._api_keys)
-    
-    def _get_next_key(self) -> Optional[str]:
-        """
-        获取下一个可用的 API Key（负载均衡）
-        
-        策略：轮询 + 跳过错误过多的 key
-        """
-        with self._state_lock:
-            if not self._key_cycle:
-                return None
-            
-            # 最多尝试所有 key
-            for _ in range(len(self._api_keys)):
-                key = next(self._key_cycle)
-                # 跳过错误次数过多的 key（超过 3 次）
-                if self._key_errors.get(key, 0) < 3:
-                    return key
-            
-            # 所有 key 都有问题，重置错误计数并返回第一个
-            logger.warning(f"[{self._name}] 所有 API Key 都有错误记录，重置错误计数")
-            self._key_errors = {key: 0 for key in self._api_keys}
-            return self._api_keys[0] if self._api_keys else None
-    
-    def _record_success(self, key: str) -> None:
-        """记录成功使用"""
-        with self._state_lock:
-            self._key_usage[key] = self._key_usage.get(key, 0) + 1
-            # 成功后减少错误计数
-            if key in self._key_errors and self._key_errors[key] > 0:
-                self._key_errors[key] -= 1
-    
-    def _record_error(self, key: str) -> None:
-        """记录错误"""
-        with self._state_lock:
-            self._key_errors[key] = self._key_errors.get(key, 0) + 1
-            error_count = self._key_errors[key]
-        logger.warning(f"[{self._name}] API Key {key[:8]}... 错误计数: {error_count}")
-    
-    @abstractmethod
-    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
-        """执行搜索（子类实现）"""
-        pass
-    
-    def _execute_search(
-        self,
-        query: str,
-        *,
-        max_results: int = 5,
-        days: int = 7,
-        api_key: Optional[str] = None,
-        **search_kwargs: Any,
-    ) -> SearchResponse:
-        """Run the shared search flow with an optional preselected API key."""
-        api_key = api_key or self._get_next_key()
-        if not api_key:
-            return SearchResponse(
-                query=query,
-                results=[],
-                provider=self._name,
-                success=False,
-                error_message=f"{self._name} 未配置 API Key"
-            )
-
-        start_time = time.time()
-        try:
-            response = self._do_search(query, api_key, max_results, days=days, **search_kwargs)
-            response.search_time = time.time() - start_time
-
-            if response.success:
-                self._record_success(api_key)
-                logger.info(f"[{self._name}] 搜索 '{query}' 成功，返回 {len(response.results)} 条结果，耗时 {response.search_time:.2f}s")
-            else:
-                self._record_error(api_key)
-
-            return response
-
-        except Exception as e:
-            self._record_error(api_key)
-            elapsed = time.time() - start_time
-            logger.error(f"[{self._name}] 搜索 '{query}' 失败: {e}")
-            return SearchResponse(
-                query=query,
-                results=[],
-                provider=self._name,
-                success=False,
-                error_message=str(e),
-                search_time=elapsed
-            )
-
-    def search(self, query: str, max_results: int = 5, days: int = 7) -> SearchResponse:
-        """
-        执行搜索
-        
-        Args:
-            query: 搜索关键词
-            max_results: 最大返回结果数
-            days: 搜索最近几天的时间范围（默认7天）
-            
-        Returns:
-            SearchResponse 对象
-        """
-        return self._execute_search(query, max_results=max_results, days=days)
 
 
 class TavilySearchProvider(BaseSearchProvider):
@@ -1838,10 +1658,12 @@ class SearXNGSearchProvider(BaseSearchProvider):
     PUBLIC_INSTANCES_POOL_LIMIT = 20
     PUBLIC_INSTANCES_MAX_ATTEMPTS = 3
     PUBLIC_INSTANCES_TIMEOUT_SECONDS = 5
+    PUBLIC_INSTANCES_FAILURE_BACKOFF_SECONDS = 900
     SELF_HOSTED_TIMEOUT_SECONDS = 10
 
     _public_instances_cache: Optional[Tuple[float, List[str]]] = None
     _public_instances_stale_retry_after: float = 0.0
+    _public_instances_unhealthy_until: float = 0.0
     _public_instances_lock = threading.Lock()
 
     def __init__(self, base_urls: Optional[List[str]] = None, *, use_public_instances: bool = False):
@@ -1862,6 +1684,7 @@ class SearXNGSearchProvider(BaseSearchProvider):
         with cls._public_instances_lock:
             cls._public_instances_cache = None
             cls._public_instances_stale_retry_after = 0.0
+            cls._public_instances_unhealthy_until = 0.0
 
     @staticmethod
     def _parse_http_error(response) -> str:
@@ -2161,6 +1984,21 @@ class SearXNGSearchProvider(BaseSearchProvider):
             timeout = self.SELF_HOSTED_TIMEOUT_SECONDS
             empty_error = "SearXNG 未配置可用实例"
         elif self._use_public_instances:
+            now = time.time()
+            with self._public_instances_lock:
+                unhealthy_until = self._public_instances_unhealthy_until
+            if unhealthy_until > now:
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=(
+                        "公共 SearXNG 实例连续失败，已临时跳过；"
+                        f"约 {max(1, int(unhealthy_until - now))} 秒后重试"
+                    ),
+                    search_time=time.time() - start_time,
+                )
             public_instances = self._get_public_instances()
             candidates = self._rotate_candidates(
                 public_instances,
@@ -2197,6 +2035,9 @@ class SearXNGSearchProvider(BaseSearchProvider):
             )
             response.search_time = time.time() - start_time
             if response.success:
+                if self._use_public_instances:
+                    with self._public_instances_lock:
+                        self.__class__._public_instances_unhealthy_until = 0.0
                 logger.info(
                     "[%s] 搜索 '%s' 成功，实例=%s，返回 %s 条结果，耗时 %.2fs",
                     self.name,
@@ -2211,6 +2052,16 @@ class SearXNGSearchProvider(BaseSearchProvider):
             logger.warning("[%s] 实例 %s 搜索失败: %s", self.name, base_url, response.error_message)
 
         elapsed = time.time() - start_time
+        if self._use_public_instances and errors:
+            with self._public_instances_lock:
+                self.__class__._public_instances_unhealthy_until = (
+                    time.time() + self.PUBLIC_INSTANCES_FAILURE_BACKOFF_SECONDS
+                )
+            logger.warning(
+                "[%s] 公共实例连续失败，未来 %.0fs 内快速跳过公共实例",
+                self.name,
+                self.PUBLIC_INSTANCES_FAILURE_BACKOFF_SECONDS,
+            )
         return SearchResponse(
             query=query,
             results=[],
@@ -2298,6 +2149,16 @@ class SearchService:
         "cninfo", "hkexnews", "巨潮资讯", "巨潮资讯网",
         "上交所", "深交所", "港交所", "证券交易所",
         "上海证券交易所", "深圳证券交易所", "香港交易所", "香港联合交易所",
+    )
+    _COMMUNITY_SOURCE_HOSTS = (
+        "guba.eastmoney.com",
+        "xueqiu.com",
+    )
+    _COMMUNITY_SOURCE_TERMS = (
+        "东方财富股吧",
+        "财富号",
+        "股吧",
+        "雪球用户",
     )
     _LOW_QUALITY_DOWNLOAD_ACTION_TERMS = (
         "下载", "安装", "下载安装", "下载安装到手机", "下载链接",
@@ -2390,7 +2251,7 @@ class SearchService:
         serpapi_keys: Optional[List[str]] = None,
         minimax_keys: Optional[List[str]] = None,
         searxng_base_urls: Optional[List[str]] = None,
-        searxng_public_instances_enabled: bool = True,
+        searxng_public_instances_enabled: bool = False,
         news_max_age_days: int = 3,
         news_strategy_profile: str = "short",
         news_search_max_workers: int = 3,
@@ -2739,6 +2600,7 @@ class SearchService:
         key: str,
         *,
         deadline: Optional[float] = None,
+        max_wait_seconds: Optional[float] = None,
     ) -> Tuple[Optional['SearchResponse'], bool, Optional[threading.Event], bool]:
         """Return a cache hit or exclusive ownership of one cache fill.
 
@@ -2755,6 +2617,11 @@ class SearchService:
                 raise RuntimeError("搜索缓存请求合并状态异常")
             waited = True
             remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and max_wait_seconds is not None:
+                # Floating-point addition/subtraction around a large monotonic
+                # clock value can produce a result a few picoseconds above the
+                # caller's original budget. A hard deadline must never expand.
+                remaining = min(remaining, max(0.0, float(max_wait_seconds)))
             if remaining is not None and remaining <= 0:
                 raise TimeoutError("题材新闻搜索等待超过调用截止时间")
             if remaining is None:
@@ -2971,6 +2838,20 @@ class SearchService:
             else f"//{raw}"
         )
         return (urlparse(parse_value).hostname or "").rstrip(".")
+
+    @classmethod
+    def _is_community_news_source(cls, item: SearchResult) -> bool:
+        """Reject forum/user-post pages from evidence sent to the LLM."""
+        hostname = cls._candidate_hostname(item.url)
+        if any(
+            hostname == host or hostname.endswith(f".{host}")
+            for host in cls._COMMUNITY_SOURCE_HOSTS
+        ):
+            return True
+        source_text = " ".join(
+            filter(None, [item.source, item.title])
+        ).lower()
+        return any(term.lower() in source_text for term in cls._COMMUNITY_SOURCE_TERMS)
 
     @staticmethod
     def _source_resembles_hostname(value: Any) -> bool:
@@ -3417,6 +3298,7 @@ class SearchService:
 
         candidates: List[SearchResult] = []
         dropped_low_quality = 0
+        dropped_community = 0
         dropped_adult_spam = 0
         dropped_zero_relevance = 0
 
@@ -3427,6 +3309,12 @@ class SearchService:
                 and cls._has_low_quality_news_page_signal(item)
             ):
                 dropped_low_quality += 1
+                continue
+            if (
+                not is_official_source
+                and cls._is_community_news_source(item)
+            ):
+                dropped_community += 1
                 continue
             if (
                 not is_official_source
@@ -3448,15 +3336,22 @@ class SearchService:
         else:
             filtered_results = candidates
 
-        if dropped_low_quality or dropped_adult_spam or dropped_zero_relevance:
+        if (
+            dropped_low_quality
+            or dropped_community
+            or dropped_adult_spam
+            or dropped_zero_relevance
+        ):
             logger.info(
                 "[新闻准入] %s: provider=%s, total=%s, kept=%s, "
-                "drop_low_quality=%s, drop_adult_spam=%s, drop_zero_relevance=%s",
+                "drop_low_quality=%s, drop_community=%s, "
+                "drop_adult_spam=%s, drop_zero_relevance=%s",
                 log_scope,
                 response.provider,
                 len(response.results),
                 len(filtered_results),
                 dropped_low_quality,
+                dropped_community,
                 dropped_adult_spam,
                 dropped_zero_relevance,
             )
@@ -3664,6 +3559,62 @@ class SearchService:
 
         return None
 
+    @classmethod
+    def _infer_report_period_date(cls, item: SearchResult) -> Optional[date]:
+        """Infer explicit calendar/report dates from otherwise undated text.
+
+        This is deliberately conservative: it is used only to reject clearly
+        stale undated research, never to present an inferred publication date.
+        """
+        text = " ".join(filter(None, [item.title, item.snippet]))
+        candidates: List[date] = []
+        for match in re.finditer(
+            r"(?<!\d)(?P<year>20\d{2})\s*[年/.-]\s*(?P<month>\d{1,2})\s*[月/.-]\s*(?P<day>\d{1,2})\s*日?(?!\d)",
+            text,
+        ):
+            try:
+                candidates.append(date(
+                    int(match.group("year")),
+                    int(match.group("month")),
+                    int(match.group("day")),
+                ))
+            except ValueError:
+                continue
+        for match in re.finditer(
+            r"(?<!\d)(?P<year>20\d{2}|\d{2})\s*Q(?P<quarter>[1-4])(?!\d)",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            year = int(match.group("year"))
+            if year < 100:
+                year += 2000
+            quarter = int(match.group("quarter"))
+            month_day = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}[quarter]
+            try:
+                candidates.append(date(year, *month_day))
+            except ValueError:
+                continue
+
+        chinese_periods = {
+            "一季": (3, 31),
+            "一季度": (3, 31),
+            "半年": (6, 30),
+            "中报": (6, 30),
+            "三季": (9, 30),
+            "三季度": (9, 30),
+            "年报": (12, 31),
+        }
+        for match in re.finditer(
+            r"(?P<year>20\d{2})\s*年?\s*(?P<period>一季度|一季|半年|中报|三季度|三季|年报)",
+            text,
+        ):
+            month_day = chinese_periods[match.group("period")]
+            try:
+                candidates.append(date(int(match.group("year")), *month_day))
+            except ValueError:
+                continue
+        return max(candidates) if candidates else None
+
     def _filter_news_response(
         self,
         response: SearchResponse,
@@ -3689,6 +3640,10 @@ class SearchService:
         for item in response.results:
             published = self._normalize_news_publish_date(item.published_date)
             if published is None:
+                inferred_period = self._infer_report_period_date(item)
+                if inferred_period is not None and inferred_period < earliest:
+                    dropped_old += 1
+                    continue
                 if keep_unknown:
                     filtered.append(
                         SearchResult(
@@ -3972,6 +3927,7 @@ class SearchService:
         cached, cache_owner, cache_event, _waited = self._get_cached_or_wait_for_reservation(
             cache_key,
             deadline=deadline,
+            max_wait_seconds=wait_seconds,
         )
         if cached is not None:
             return cached
@@ -4374,7 +4330,7 @@ class SearchService:
         Returns:
             {维度名称: SearchResponse} 字典
         """
-        results = {}
+        results: Dict[str, SearchResponse] = {}
 
         is_foreign = self._is_foreign_stock(stock_code)
         is_index_etf = self.is_index_or_etf(stock_code, stock_name)

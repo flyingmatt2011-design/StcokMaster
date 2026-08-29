@@ -100,7 +100,7 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
       >
         <TriggerIcon className={iconClassName ?? cn('shrink-0', isRailVariant ? 'h-[18px] w-[18px]' : isNavVariant ? 'h-5 w-5' : 'h-4 w-4')} />
         {isRailVariant ? (
-          <span className={labelClassName}>{t('theme.theme')}</span>
+          collapsed ? null : <span className={labelClassName}>{t('theme.theme')}</span>
         ) : isNavVariant ? (
           collapsed ? null : <span className="truncate text-[1.02rem] font-medium">{t('theme.theme')}</span>
         ) : (
@@ -113,7 +113,7 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
           role="menu"
           aria-label={t('theme.menu')}
           className={cn(
-            'z-[100] min-w-[8rem] overflow-hidden rounded-2xl border border-border/70 bg-elevated p-1.5 shadow-[0_24px_48px_rgba(3,8,20,0.32)] backdrop-blur-xl',
+            'stockmaster-theme-menu z-[100] min-w-[8rem] overflow-hidden rounded-xl border p-1.5',
             isNavVariant || isRailVariant
               ? 'absolute bottom-full left-0 mb-2 w-max min-w-[9rem]'
               : 'absolute right-0 mt-2'
@@ -127,12 +127,13 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
                 type="button"
                 role="menuitemradio"
                 aria-checked={isActive}
+                data-active={isActive ? 'true' : 'false'}
                 onClick={() => {
                   setTheme(value);
                   setOpen(false);
                 }}
                 className={cn(
-                  'flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm transition-colors',
+                  'stockmaster-theme-option flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm transition-colors',
                   isActive
                     ? 'bg-cyan/10 text-foreground'
                     : 'text-secondary-text hover:bg-hover hover:text-foreground'

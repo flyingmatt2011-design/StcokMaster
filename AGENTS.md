@@ -177,6 +177,9 @@ gh run view <run_id> --log-failed
   - 适用范围：`apps/dsa-desktop/`、`scripts/run-desktop.ps1`、`scripts/build-desktop*.ps1`、`scripts/build-*.sh`、`docs/desktop-package.md`
   - 默认执行：先构建 Web，再构建桌面端
   - 如受平台限制未能完整验证，需要明确说明是否验证了 Web 构建产物、Electron 构建以及 Release 工作流影响。
+  - 本地开发启动会把一组显式 StockMaster 后端 overlay 同步到 `%APPDATA%/stockmaster-desktop/stockmaster-algorithm-runtimes/<sha>/`。任何被同步文件新增跨文件 import、导入新符号或依赖拆分模块时，必须同步检查并更新 `apps/dsa-desktop/main.js` 的 overlay 文件清单及对应桌面测试，保证导入方与定义方形成完整依赖闭包；只验证仓库根目录导入或全量 pytest 不足以证明活动运行目录可启动。
+  - 涉及本地后端 overlay 或其依赖时，除 Web/桌面构建外，必须验证“同步后的活动运行目录”：至少从该运行目录执行关键模块 import smoke，优先再执行一次真实后端健康检查。2026-08-29 曾因同步了导入 `get_next_quote_refresh_transition` 的 `api/v1/endpoints/stocks.py`，却未同步定义该符号的 `src/core/trading_calendar.py`，导致 FastAPI 在监听端口前退出并被 Electron 包装为 `Health check aborted: backend exited with code 1`。
+  - 排查桌面 `backend exited with code 1` 时，先读取 `%APPDATA%/stockmaster-desktop/logs/desktop.log` 确认实际启动目录和退出时刻，再读取同目录当天的 `stock_analysis_YYYYMMDD.log` / debug 日志，以第一条致命 import/配置/语法异常为根因；`Health check aborted` 只是 Electron 的结果提示，不是根因。
 
 - API / Schema / 认证联动改动：
   - 适用范围：`api/**`、`src/schemas/**`、`src/services/**`、`apps/dsa-web/**`、`apps/dsa-desktop/**`

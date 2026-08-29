@@ -27,12 +27,20 @@ from api.v1.schemas.system_config import (
     TestGenerationBackendRequest,
     TestLLMChannelRequest,
     TestNotificationChannelRequest,
+    TestSearchProviderRequest,
     UpdateSystemConfigRequest,
 )
 import src.auth as auth
 from src.config import Config
 from src.core.config_manager import ConfigManager
+from src.core.config_registry import _FIELD_DEFINITIONS
 from src.services.system_config_service import SystemConfigService
+
+_CONFIG_TEST_ENV_KEYS = frozenset(_FIELD_DEFINITIONS) | {
+    "ENV_FILE",
+    "DATABASE_PATH",
+    "DSA_DESKTOP_MODE",
+}
 
 
 class SystemConfigApiTestCase(unittest.TestCase):
@@ -44,6 +52,14 @@ class SystemConfigApiTestCase(unittest.TestCase):
         auth._password_hash_salt = None
         auth._password_hash_stored = None
         auth._rate_limit = {}
+
+        self._config_env_snapshot = {
+            key: os.environ[key]
+            for key in _CONFIG_TEST_ENV_KEYS
+            if key in os.environ
+        }
+        for key in _CONFIG_TEST_ENV_KEYS:
+            os.environ.pop(key, None)
 
         self.temp_dir = tempfile.TemporaryDirectory()
         self.env_path = Path(self.temp_dir.name) / ".env"
@@ -83,6 +99,9 @@ class SystemConfigApiTestCase(unittest.TestCase):
             os.environ.pop("DATABASE_PATH", None)
         else:
             os.environ["DATABASE_PATH"] = self._orig_database_path
+        for key in _CONFIG_TEST_ENV_KEYS:
+            os.environ.pop(key, None)
+        os.environ.update(self._config_env_snapshot)
         self.temp_dir.cleanup()
 
     @staticmethod
@@ -321,6 +340,10 @@ class SystemConfigApiTestCase(unittest.TestCase):
             return SimpleNamespace(returncode=0, stdout="")
 
         with (
+            patch(
+                "src.services.agent_backend_status_service.is_native_windows",
+                return_value=False,
+            ),
             patch(
                 "src.services.agent_backend_status_service.resolve_command",
                 return_value=["/test/codex"],
@@ -914,6 +937,34 @@ class SystemConfigApiTestCase(unittest.TestCase):
         mock_test.assert_called_once()
         self.assertEqual(mock_test.call_args.kwargs["channel"], "wechat")
         self.assertEqual(mock_test.call_args.kwargs["timeout_seconds"], 5)
+
+    def test_test_search_provider_endpoint_returns_service_payload(self) -> None:
+        with patch.object(
+            self.service,
+            "test_search_provider",
+            return_value={
+                "success": True,
+                "provider": "bocha",
+                "message": "连接成功，返回 2 条结果",
+                "result_count": 2,
+                "error_code": None,
+                "retryable": False,
+                "latency_ms": 86,
+            },
+        ) as mock_test:
+            payload = system_config.test_search_provider(
+                request=TestSearchProviderRequest(
+                    provider="bocha",
+                    items=[{"key": "BOCHA_API_KEYS", "value": "draft-key"}],
+                ),
+                service=self.service,
+            ).model_dump()
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["result_count"], 2)
+        self.assertEqual(payload["latency_ms"], 86)
+        mock_test.assert_called_once()
+        self.assertEqual(mock_test.call_args.kwargs["provider"], "bocha")
 
     def test_test_notification_channel_schema_accepts_registered_channels(self) -> None:
         dingtalk_request = TestNotificationChannelRequest(

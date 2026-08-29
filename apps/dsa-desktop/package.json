@@ -1,5 +1,5 @@
 {
-  "name": "daily-stock-analysis-desktop",
+  "name": "stockmaster-desktop",
   "version": "3.21.0",
   "private": true,
   "main": "main.js",
@@ -12,12 +12,12 @@
     "electron-updater": "^6.8.3"
   },
   "devDependencies": {
-    "electron": "^31.4.0",
+    "electron": "^31.7.7",
     "electron-builder": "^24.13.3"
   },
   "build": {
-    "appId": "com.daily-stock-analysis.desktop",
-    "productName": "Daily Stock Analysis",
+    "appId": "com.stockmaster.desktop",
+    "productName": "StockMaster",
     "directories": {
       "output": "dist"
     },
@@ -25,7 +25,8 @@
     "files": [
       "main.js",
       "preload.js",
-      "renderer/**/*"
+      "renderer/**/*",
+      "algorithm-update/**/*"
     ],
     "extraResources": [
       {
@@ -35,11 +36,19 @@
       {
         "from": "../../dist/backend/stock_analysis",
         "to": "backend/stock_analysis"
+      },
+      {
+        "from": "../../stockmaster/algorithm-update-policy.json",
+        "to": "stockmaster/algorithm-update-policy.json"
+      },
+      {
+        "from": "../../stockmaster/upstream-baseline.json",
+        "to": "stockmaster/upstream-baseline.json"
       }
     ],
     "win": {
       "target": "nsis",
-      "artifactName": "daily-stock-analysis-windows-installer-v${version}.${ext}",
+      "artifactName": "StockMaster-${version}-${arch}.${ext}",
       "publish": [
         {
           "provider": "github",

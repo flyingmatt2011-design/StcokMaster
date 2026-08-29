@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(currentDir, '../..');
 const shouldRunWebSmoke = !!process.env.DSA_WEB_SMOKE_PASSWORD;
+const useExternalSmokeServers = process.env.DSA_WEB_SMOKE_EXTERNAL_SERVERS === '1';
 
 function resolveBackendCommand() {
   if (process.env.DSA_WEB_SMOKE_BACKEND_CMD) {
@@ -35,9 +36,9 @@ export default defineConfig({
     locale: 'zh-CN',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    video: process.env.DSA_WEB_SMOKE_DISABLE_VIDEO === '1' ? 'off' : 'retain-on-failure',
   },
-  webServer: shouldRunWebSmoke
+  webServer: shouldRunWebSmoke && !useExternalSmokeServers
     ? [
         {
           command: resolveBackendCommand(),
@@ -47,7 +48,9 @@ export default defineConfig({
           timeout: 120_000,
         },
         {
-          command: 'npm run dev -- --host 127.0.0.1 --port 4173',
+          // Invoke the locked local Vite binary directly. Some hardened npm setups
+          // re-resolve dependencies on every nested `npm run` and can erase node_modules.
+          command: 'node ./node_modules/vite/bin/vite.js --host 127.0.0.1 --port 4173',
           cwd: currentDir,
           url: 'http://127.0.0.1:4173',
           reuseExistingServer: !process.env.CI,
@@ -58,7 +61,10 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        channel: process.env.DSA_WEB_SMOKE_BROWSER_CHANNEL as 'chrome' | undefined,
+      },
     },
   ],
 });

@@ -471,7 +471,8 @@ describe('ReportSummary analysis context placement', () => {
     expect(screen.getByText('日线未完成')).toBeInTheDocument();
     expect(screen.getAllByText('质量分 82/100 可用')[0]).toBeInTheDocument();
 
-    const strategy = screen.getByText('狙击点位');
+    const overviewPanel = screen.getByTestId('report-overview');
+    expect(within(overviewPanel).getAllByText('120').length).toBeGreaterThanOrEqual(1);
     const news = screen.getByText('相关资讯');
     const diagnostics = screen.getByTestId('run-diagnostics');
     const contextSummary = screen.getByTestId('analysis-context-summary');
@@ -479,7 +480,7 @@ describe('ReportSummary analysis context placement', () => {
     expect(diagnostics).not.toHaveAttribute('open');
     const traceability = screen.getByText('数据追溯');
 
-    expect(strategy.compareDocumentPosition(news) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(overviewPanel.compareDocumentPosition(news) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(news.compareDocumentPosition(contextSummary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(contextSummary.compareDocumentPosition(diagnostics) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(diagnostics.compareDocumentPosition(traceability) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

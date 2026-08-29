@@ -2,26 +2,23 @@ import type React from 'react';
 import type {
   ReportDetails as ReportDetailsType,
   ReportMeta,
+  ReportStrategy as ReportStrategyType,
   ReportSummary as ReportSummaryType,
 } from '../../types/analysis';
-import { Badge, Button, Card, ScoreGauge } from '../common';
 import { formatDateTime } from '../../utils/format';
 import { getMarketPhaseSummaryLabel, getPartialBarLabel } from '../../utils/marketPhase';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
+import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../../utils/decisionAction';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { ShareImageButton } from './ShareImageButton';
 
 interface ReportOverviewProps {
   meta: ReportMeta;
   summary: ReportSummaryType;
+  strategy?: ReportStrategyType;
   details?: ReportDetailsType;
   isHistory?: boolean;
-  watchlist?: {
-    isInWatchlist: (code: string) => boolean;
-    onToggle: (code: string) => void;
-    isActioning: boolean;
-    actionMessage: string | null;
-  };
+  newsPanel?: React.ReactNode;
 }
 
 type BoardStatus = 'leading' | 'lagging';
@@ -165,8 +162,9 @@ const buildPreparedRelatedBoards = (
 export const ReportOverview: React.FC<ReportOverviewProps> = ({
   meta,
   summary,
+  strategy,
   details,
-  watchlist,
+  newsPanel,
 }) => {
   const { t } = useUiLanguage();
   const reportLanguage = normalizeReportLanguage(meta.reportLanguage);
@@ -184,7 +182,6 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
     if (changePct === undefined || changePct === null) {
       return undefined;
     }
-
     if (changePct > 0) {
       return { color: 'var(--home-price-up)' };
     }
@@ -209,197 +206,141 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
     return text.laggingBoard;
   };
 
-  const getBoardStatusVariant = (status: BoardStatus): 'success' | 'danger' => {
-    if (status === 'leading') {
-      return 'success';
-    }
-    return 'danger';
-  };
-
-  const renderBoardChip = (board: PreparedBoard) => (
-    <div
-      key={board.key}
-      className="inline-flex shrink-0 items-center gap-2 text-sm"
-    >
-      <span className="home-accent-chip px-2 py-0.5 text-xs font-medium">
-        {board.name}
-      </span>
-      {board.signal && (
-        <Badge
-          variant={getBoardStatusVariant(board.signal.status)}
-          className="home-board-status-badge shadow-none"
-        >
-          {getBoardStatusLabel(board.signal.status)}
-        </Badge>
-      )}
-      {board.signal && board.signal.changePct !== undefined && board.signal.changePct !== null && (
-        <span
-          className="text-xs font-mono"
-          style={getPriceChangeStyle(board.signal.changePct)}
-        >
-          {formatChangePct(board.signal.changePct)}
-        </span>
-      )}
-    </div>
+  const actionLabels = buildDecisionActionLabelMap(t);
+  const verdict = getDecisionActionLabel(
+    summary.action,
+    summary.actionLabel,
+    summary.operationAdvice,
+    text.actionAdvice,
+    actionLabels,
   );
+  const verdictTone = summary.action === 'buy' || summary.action === 'add'
+    ? 'buy'
+    : summary.action === 'sell' || summary.action === 'reduce'
+      ? 'sell'
+      : 'hold';
+  const changeDirection = typeof meta.changePct === 'number' && meta.changePct !== 0
+    ? meta.changePct > 0 ? '▲' : '▼'
+    : '';
+  const riskItems = Array.isArray(details?.riskAlerts) ? details.riskAlerts.filter(Boolean) : [];
+  const catalystItems = Array.isArray(details?.positiveCatalysts) ? details.positiveCatalysts.filter(Boolean) : [];
+  const checklist = [
+    ...riskItems.slice(0, 3).map((item) => ({ status: 'WARN', tone: 'warn', text: item })),
+    ...catalystItems.slice(0, 2).map((item) => ({ status: 'PASS', tone: 'pass', text: item })),
+  ];
+  const ladder = [
+    { label: text.idealBuy, value: strategy?.idealBuy || details?.supportLevel || '--', note: strategy?.secondaryBuy, tone: 'buy' },
+    { label: text.stopLoss, value: strategy?.stopLoss || '--', note: details?.supportLevel || undefined, tone: 'stop' },
+    { label: text.takeProfit, value: strategy?.takeProfit || details?.resistanceLevel || '--', note: details?.resistanceLevel || undefined, tone: 'target' },
+  ];
 
   return (
-    <div className="space-y-5">
-      {/* 主信息区 - 两列布局 */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 items-start">
-        {/* 左侧：股票信息与结论 */}
-        <div className="lg:col-span-2 space-y-5">
-          {/* 股票头部 */}
-          <Card variant="gradient" padding="md" className="home-report-hero">
-            <div className="mb-5 flex items-start justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-3">
-                  <h2 className="text-[28px] font-bold leading-tight text-foreground">
-                    {meta.stockName || meta.stockCode}
-                  </h2>
-                  {/* 价格和涨跌幅 */}
-                  {meta.currentPrice != null && (
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-xl font-bold font-mono" style={getPriceChangeStyle(meta.changePct)}>
-                        {meta.currentPrice.toFixed(2)}
-                      </span>
-                      <span className="text-sm font-semibold font-mono" style={getPriceChangeStyle(meta.changePct)}>
-                        {formatChangePct(meta.changePct)}
-                      </span>
-                    </div>
-                  )}
-                </div>
-                <div className="flex flex-wrap items-center gap-2 mt-1.5">
-                  <span className="home-accent-chip px-2 py-0.5 font-mono text-xs">
-                    {meta.stockCode}
-                  </span>
-                  {marketPhaseLabel ? (
-                    <Badge variant="info" className="shrink-0 gap-1.5 shadow-none" aria-label={marketPhaseLabel}>
-                      {marketPhaseLabel}
-                    </Badge>
-                  ) : null}
-                  {partialBarLabel ? (
-                    <Badge variant="warning" className="shrink-0 shadow-none" aria-label={partialBarLabel}>
-                      {partialBarLabel}
-                    </Badge>
-                  ) : null}
-                  <span className="text-xs text-muted-text flex items-center gap-1">
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                    </svg>
-                    {formatDateTime(meta.createdAt)}
-                  </span>
-                </div>
-              </div>
-              <ShareImageButton
-                recordId={meta.id}
-                reportTitle={`${meta.stockName || meta.stockCode}-${meta.stockCode}`}
-                reportLanguage={reportLanguage}
-              />
-            </div>
-
-            {/* 关键结论 */}
-            <div className="home-divider border-t pt-5">
-              <span className="label-uppercase">{text.keyInsights}</span>
-              <p className="mt-2 max-w-[62ch] whitespace-pre-wrap text-left text-[15px] leading-7 text-foreground">
-                {summary.analysisSummary || text.noAnalysisSummary}
-              </p>
-            </div>
-          </Card>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-            {/* 操作建议 */}
-            <Card
-              variant="bordered"
-              padding="sm"
-              hoverable
-              className="home-panel-card home-insight-card"
-              style={{ ['--home-insight-tone' as string]: 'var(--home-strategy-buy)' }}
-            >
-              <div className="flex items-start gap-3">
-                <div className="home-insight-icon w-8 h-8 rounded-lg bg-success/10 flex items-center justify-center flex-shrink-0">
-                  <svg className="w-4 h-4 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-                  </svg>
-                </div>
-                <div className="space-y-1.5">
-                  <h4 className="home-insight-title text-[11px] font-medium uppercase tracking-[0.16em]">{text.actionAdvice}</h4>
-                  <p className="home-insight-body text-sm leading-6">
-                    {summary.operationAdvice || text.noAdvice}
-                  </p>
-                </div>
-              </div>
-            </Card>
-
-            {/* 趋势预测 */}
-            <Card
-              variant="bordered"
-              padding="sm"
-              hoverable
-              className="home-panel-card home-insight-card"
-              style={{ ['--home-insight-tone' as string]: 'var(--home-strategy-take)' }}
-            >
-              <div className="flex items-start gap-3">
-                <div className="home-insight-icon w-8 h-8 rounded-lg bg-warning/10 flex items-center justify-center flex-shrink-0">
-                  <svg className="w-4 h-4 text-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                  </svg>
-                </div>
-                <div className="space-y-1.5">
-                  <h4 className="home-insight-title text-[11px] font-medium uppercase tracking-[0.16em]">{text.trendPrediction}</h4>
-                  <p className="home-insight-body text-sm leading-6">
-                    {summary.trendPrediction || text.noPrediction}
-                  </p>
-                </div>
-              </div>
-            </Card>
+    <div className="stockmaster-report-overview terminal-report-overview" data-testid="report-overview">
+      <header className="terminal-stock-head">
+        <div className="terminal-stock-identity">
+          <h2>{meta.stockName || meta.stockCode}</h2>
+          <span className="terminal-mono">{meta.stockCode}</span>
+        </div>
+        {meta.currentPrice != null ? (
+          <div className={`terminal-stock-price ${typeof meta.changePct === 'number' && meta.changePct > 0 ? 'term-up' : typeof meta.changePct === 'number' && meta.changePct < 0 ? 'term-down' : ''}`}>
+            <strong className="terminal-mono">{meta.currentPrice.toFixed(2)} <small>{changeDirection}</small></strong>
+            <span className="terminal-mono">{formatChangePct(meta.changePct)}</span>
           </div>
-
-          {preparedRelatedBoards.length > 0 && (
-            <Card variant="bordered" padding="sm" className="home-panel-card min-w-0 max-w-full text-left">
-              <section aria-label={text.relatedBoards} className="min-w-0 max-w-full">
-                <div className="mb-3 flex min-w-0 items-baseline gap-2">
-                  <span className="label-uppercase">{text.boardLinkage}</span>
-                  <h3 className="mt-0.5 text-base font-semibold text-foreground">{text.relatedBoards}</h3>
-                </div>
-
-                <div className="home-related-board-list flex min-h-6 w-full min-w-0 max-w-full flex-nowrap items-center gap-2 overflow-x-auto overscroll-x-contain touch-pan-x pb-1">
-                  {preparedRelatedBoards.map(renderBoardChip)}
-                </div>
-              </section>
-            </Card>
-          )}
+        ) : null}
+        <div className="terminal-stock-meta">
+          {marketPhaseLabel ? <span aria-label={marketPhaseLabel}>{marketPhaseLabel}</span> : null}
+          {partialBarLabel ? <span className="is-amber" aria-label={partialBarLabel}>{partialBarLabel}</span> : null}
+          <time className="terminal-mono">{formatDateTime(meta.createdAt)}</time>
+          <ShareImageButton recordId={meta.id} reportTitle={`${meta.stockName || meta.stockCode}-${meta.stockCode}`} reportLanguage={reportLanguage} />
         </div>
+      </header>
 
-        {/* 右侧：情绪指标 / 自选操作 */}
-        <div className="flex flex-col space-y-4">
-          {watchlist && meta.reportType !== 'market_review' && (
-            <Card variant="bordered" padding="sm" className="home-panel-card">
-              <div className="text-center space-y-3">
-                <span className="label-uppercase">{t('report.watchlist')}</span>
-                <div className="text-xs text-muted-text font-mono">{meta.stockCode}</div>
-                <Button
-                  variant={watchlist.isInWatchlist(meta.stockCode) ? 'danger-subtle' : 'secondary'}
-                  size="sm"
-                  isLoading={watchlist.isActioning}
-                  onClick={() => watchlist.onToggle(meta.stockCode)}
-                  className="w-full text-xs"
-                >
-                  {watchlist.isInWatchlist(meta.stockCode) ? t('report.removeFromWatchlist') : t('report.addToWatchlist')}
-                </Button>
-                {watchlist.actionMessage && (
-                  <p className="text-[11px] text-secondary-text animate-in fade-in">{watchlist.actionMessage}</p>
-                )}
+      <div className="terminal-report-grid">
+        <main className="terminal-report-main">
+          <section className={`terminal-verdict-panel is-${verdictTone}`}>
+            <div className="terminal-verdict-top">
+              <div className="terminal-verdict-callout">
+                <span>{text.actionAdvice}</span>
+                <strong>{verdict || text.noAdvice}</strong>
+                <small>{summary.trendPrediction || text.noPrediction}</small>
               </div>
-            </Card>
-          )}
-          <Card variant="bordered" padding="md" className="home-panel-card home-rail-card !overflow-visible">
-            <div className="text-center">
-              <h3 className="mb-5 text-sm font-medium tracking-wide text-foreground">{text.marketSentiment}</h3>
-              <ScoreGauge score={summary.sentimentScore} size="lg" language={reportLanguage} />
+              <p>{summary.analysisSummary || text.noAnalysisSummary}</p>
+              <div className="terminal-verdict-score">
+                <strong className="terminal-mono">{summary.sentimentScore ?? '--'}</strong>
+                <span>{text.marketSentiment}</span>
+              </div>
             </div>
-          </Card>
-        </div>
+            <div className="terminal-price-ladder">
+              {ladder.map((item) => (
+                <div key={item.label} className={`is-${item.tone}`}>
+                  <span>{item.label}</span>
+                  <strong className="terminal-mono">{item.value}</strong>
+                  {item.note && item.note !== item.value ? <small>{item.note}</small> : null}
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {checklist.length > 0 ? (
+            <section className="terminal-report-panel">
+              <header><h3>{t('terminal.rigorousChecks')}</h3><span className="terminal-meta">{checklist.length}</span></header>
+              <div className="terminal-check-list">
+                {checklist.map((item, index) => (
+                  <div key={`${item.status}-${index}`}>
+                    <span className={`terminal-check-state is-${item.tone}`}>{item.status === 'WARN' ? '▲' : '✓'} {item.status}</span>
+                    <p>{item.text}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          <section className="terminal-report-panel">
+            <header><h3>{t('terminal.analysisPoints')}</h3></header>
+            <div className="terminal-analysis-lines">
+              <div><span>{text.keyInsights}</span><p>{details?.coreConclusion || summary.analysisSummary || text.noAnalysisSummary}</p></div>
+              <div><span>{text.trendPrediction}</span><p>{summary.trendPrediction || text.noPrediction}</p></div>
+              <div><span>{text.actionAdvice}</span><p>{summary.operationAdvice || text.noAdvice}</p></div>
+            </div>
+          </section>
+
+          {newsPanel ? (
+            <div className="terminal-report-news" data-testid="report-news-slot">
+              {newsPanel}
+            </div>
+          ) : null}
+        </main>
+
+        <aside className="terminal-report-data">
+          {preparedRelatedBoards.length > 0 ? (
+            <section aria-label={text.relatedBoards}>
+              <header><h3>{text.relatedBoards}</h3></header>
+              <div className="home-related-board-list terminal-board-list">
+                {preparedRelatedBoards.map((board) => (
+                  <div key={board.key}>
+                    <span>{board.name}</span>
+                    {board.signal ? <em className={board.signal.status === 'leading' ? 'term-up' : 'term-down'}>{getBoardStatusLabel(board.signal.status)}</em> : null}
+                    {board.signal?.changePct != null ? <strong className="terminal-mono" style={getPriceChangeStyle(board.signal.changePct)}>{formatChangePct(board.signal.changePct)}</strong> : null}
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          <section>
+            <header><h3>{t('terminal.keyLevels')}</h3></header>
+            <dl className="terminal-data-list">
+              <div><dt>{text.idealBuy}</dt><dd className="terminal-mono">{strategy?.idealBuy || details?.supportLevel || '--'}</dd></div>
+              <div><dt>{text.stopLoss}</dt><dd className="terminal-mono term-down">{strategy?.stopLoss || '--'}</dd></div>
+              <div><dt>{text.takeProfit}</dt><dd className="terminal-mono is-amber">{strategy?.takeProfit || details?.resistanceLevel || '--'}</dd></div>
+            </dl>
+          </section>
+          {riskItems.length > 0 ? (
+            <section><header><h3>{t('terminal.riskMarkers')}</h3></header><div className="terminal-tag-list">{riskItems.map((item) => <span key={item}>{item}</span>)}</div></section>
+          ) : null}
+          {catalystItems.length > 0 ? (
+            <section><header><h3>{t('terminal.positiveFactors')}</h3></header><div className="terminal-tag-list">{catalystItems.map((item) => <span key={item}>{item}</span>)}</div></section>
+          ) : null}
+        </aside>
       </div>
     </div>
   );

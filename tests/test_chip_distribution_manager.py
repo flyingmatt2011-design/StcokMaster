@@ -155,3 +155,55 @@ def test_manager_records_failed_chip_attempt_and_falls_back_to_next_fetcher():
         "provider_run_started",
         "provider_run",
     ]
+
+
+def test_manager_reuses_recent_success_when_all_live_chip_sources_fail():
+    get_chip_circuit_breaker().reset()
+    live_chip = ChipDistribution(
+        code="600519",
+        source="akshare",
+        profit_ratio=0.61,
+        avg_cost=12.3,
+        concentration_90=0.13,
+    )
+    fetcher = _ChipFetcher("AkshareFetcher", 0, live_chip)
+    manager = DataFetcherManager(fetchers=[fetcher])
+
+    with patch("src.config.get_config", return_value=SimpleNamespace(enable_chip_distribution=True)):
+        assert manager.get_chip_distribution("600519") is live_chip
+        fetcher._result = None
+        cached = manager.get_chip_distribution("600519")
+
+    assert cached is not None
+    assert cached is not live_chip
+    assert cached.source == "cache:akshare"
+    assert cached.avg_cost == 12.3
+
+
+def test_manager_reuses_current_session_disk_cache_when_live_sources_fail():
+    get_chip_circuit_breaker().reset()
+    manager = DataFetcherManager(
+        fetchers=[_ChipFetcher("UnavailableChipFetcher", 0, None)]
+    )
+    payload = {
+        "chip": {
+            "code": "600519",
+            "source": "akshare",
+            "profit_ratio": 0.61,
+            "avg_cost": 12.3,
+            "concentration_90": 0.13,
+            "cost_70_low": 10.2,
+            "cost_70_high": 13.8,
+        }
+    }
+
+    with patch.dict("os.environ", {"STOCKMASTER_SHARED_FETCHER_CACHE": "true"}), patch(
+        "src.config.get_config",
+        return_value=SimpleNamespace(enable_chip_distribution=True),
+    ), patch("data_provider.base.read_session_cache", return_value=payload):
+        cached = manager.get_chip_distribution("600519")
+
+    assert cached is not None
+    assert cached.source == "session_cache:akshare"
+    assert cached.avg_cost == 12.3
+    assert cached.cost_70_low == 10.2

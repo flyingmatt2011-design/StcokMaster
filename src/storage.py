@@ -50,6 +50,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import (
+    close_all_sessions,
     declarative_base,
     sessionmaker,
     Session,
@@ -60,6 +61,7 @@ from src.agent.provider_trace import PROVIDER_TRACE_RETENTION_LIMIT
 from src.config import get_config
 from src.schemas.decision_profile import extract_legacy_decision_profile
 from src.utils.sniper_points import extract_sniper_points, parse_sniper_value
+from src.storage_time import to_utc_naive_datetime, utc_naive_now
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -73,19 +75,6 @@ if TYPE_CHECKING:
     from src.search_service import SearchResponse
 
 
-def utc_naive_now() -> datetime:
-    """Return current UTC time without tzinfo for SQLite DateTime columns."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-def to_utc_naive_datetime(value: datetime) -> datetime:
-    """Normalize aware datetimes to UTC-naive; treat naive values as UTC-naive."""
-    if value.tzinfo is not None and value.utcoffset() is not None:
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
-    return value
-
-
-# === 数据模型定义 ===
 
 class DatabaseSchemaMigration(Base):
     """Applied database schema version marker."""
@@ -1373,6 +1362,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_decision_signal_profile_schema()
             self._ensure_intelligence_item_scope_values()
+            self._repair_legacy_efinance_volume_units()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
 
@@ -1416,6 +1406,48 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         except Exception:
             session.rollback()
             raise
+        finally:
+            session.close()
+
+    def _repair_legacy_efinance_volume_units(self) -> int:
+        """Convert legacy Efinance daily volume from lots to shares.
+
+        Older Efinance adapters persisted A-share volume in board lots while
+        ``stock_daily.volume`` is defined in shares.  A legacy row is identified
+        by its exact source plus an implied turnover ratio near 100; corrected
+        rows have a ratio near 1, making this repair naturally idempotent.
+        """
+
+        session = self._SessionLocal()
+        implied_turnover_ratio = StockDaily.amount / (
+            StockDaily.volume * StockDaily.close
+        )
+        try:
+            repaired_count = session.query(StockDaily).filter(
+                StockDaily.data_source == "EfinanceFetcher",
+                StockDaily.volume.is_not(None),
+                StockDaily.volume > 0,
+                StockDaily.amount.is_not(None),
+                StockDaily.amount > 0,
+                StockDaily.close.is_not(None),
+                StockDaily.close > 0,
+                implied_turnover_ratio >= 50,
+                implied_turnover_ratio <= 150,
+            ).update(
+                {StockDaily.volume: StockDaily.volume * 100},
+                synchronize_session=False,
+            )
+            session.commit()
+            if repaired_count:
+                logger.warning(
+                    "已修复 %s 条旧 Efinance 日线成交量：手 -> 股",
+                    repaired_count,
+                )
+            return int(repaired_count or 0)
+        except Exception as exc:
+            session.rollback()
+            logger.warning("旧 Efinance 日线成交量修复失败，已保留原数据: %s", exc)
+            return 0
         finally:
             session.close()
 
@@ -1792,6 +1824,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         """重置单例（用于测试）"""
         with cls._init_lock:
             if cls._instance is not None:
+                close_all_sessions()
                 if hasattr(cls._instance, '_engine') and cls._instance._engine is not None:
                     cls._instance._engine.dispose()
                 cls._instance._initialized = False
@@ -3317,7 +3350,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         with self.session_scope() as session:
             stmt = select(ConversationMessage).filter(
                 ConversationMessage.session_id == session_id
-            ).order_by(ConversationMessage.created_at.desc()).limit(limit)
+            ).order_by(
+                ConversationMessage.created_at.desc(),
+                ConversationMessage.id.desc(),
+            ).limit(limit)
             messages = session.execute(stmt).scalars().all()
 
             # 倒序返回，保证时间顺序
@@ -3628,7 +3664,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             stmt = (
                 select(ConversationMessage)
                 .where(ConversationMessage.session_id == session_id)
-                .order_by(ConversationMessage.created_at)
+                .order_by(ConversationMessage.created_at, ConversationMessage.id)
                 .limit(limit)
             )
             messages = session.execute(stmt).scalars().all()

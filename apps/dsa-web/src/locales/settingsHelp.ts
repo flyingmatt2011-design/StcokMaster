@@ -15,6 +15,13 @@ export interface SettingsHelpContent {
 type SettingsHelpMap = Record<string, SettingsHelpContent>;
 
 const settingsHelpZhCN: SettingsHelpMap = {
+  'settings.system.CONFIG_VALIDATE_MODE': {
+    title: '启动配置校验模式',
+    summary: '控制启动时遇到配置错误，是记录告警后继续，还是阻止服务启动。',
+    usage: '日常桌面端建议使用 warn；部署验收或自动化环境可使用 strict。',
+    valueNotes: ['warn 会输出结构化问题并继续启动；strict 遇到错误级问题会停止启动。'],
+    impact: ['只影响启动期配置校验，不改变分析算法、评分规则或数据源优先级。'],
+  },
   'settings.base.STOCK_LIST': {
     title: '自选股列表',
     summary: '配置需要分析的股票代码列表，是手动分析、定时任务和通知报告的基础输入。',
@@ -91,7 +98,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
   'settings.ai_model.GENERATION_BACKEND_MAX_CONCURRENCY': {
     title: '模型生成最大并发',
     summary: '限制同时进行的模型生成任务数量。',
-    usage: '默认 1。使用本地 CLI 生成方式时，实际并发还会受“本地命令行最大并发”限制。',
+    usage: '默认 1。官方 API、中转渠道与本地 CLI 的报告生成共享此上限；行情和新闻准备不受影响。',
     valueNotes: ['使用默认模型配置时，这个字段不会改变分析任务线程数。'],
   },
   'settings.ai_model.LOCAL_CLI_BACKEND_MAX_CONCURRENCY': {
@@ -1248,6 +1255,13 @@ const settingsHelpZhCN: SettingsHelpMap = {
 };
 
 const settingsHelpEnUS: SettingsHelpMap = {
+  'settings.system.CONFIG_VALIDATE_MODE': {
+    title: 'Startup config validation',
+    summary: 'Controls whether startup logs configuration errors and continues or stops immediately.',
+    usage: 'Use warn for normal desktop operation and strict for deployment validation or automation.',
+    valueNotes: ['warn emits structured issues and continues; strict stops on error-level issues.'],
+    impact: ['Affects startup validation only; analysis algorithms, scoring rules, and source priority are unchanged.'],
+  },
   'settings.base.STOCK_LIST': {
     title: 'Watchlist',
     summary: 'Defines the stock codes used by analysis jobs and notification reports.',
@@ -1319,7 +1333,7 @@ const settingsHelpEnUS: SettingsHelpMap = {
   'settings.ai_model.GENERATION_BACKEND_MAX_CONCURRENCY': {
     title: 'Model Generation Max Concurrency',
     summary: 'Limits how many model generation jobs may run at the same time.',
-    usage: 'Default is 1. When using local CLI backends, actual concurrency is also limited by Local Command Max Concurrency.',
+    usage: 'Default is 1. Official APIs, relay channels, and local CLI report generation share this cap; market-data and news preparation remain parallel.',
     valueNotes: ['When using Default model settings, this does not change the number of analysis worker tasks.'],
   },
   'settings.ai_model.LOCAL_CLI_BACKEND_MAX_CONCURRENCY': {

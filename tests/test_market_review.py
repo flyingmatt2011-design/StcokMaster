@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import date
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -44,6 +45,7 @@ from src.config import Config
 from src.llm.generation_backend import GenerationError, GenerationErrorCode
 from src.services.run_diagnostics import activate_run_diagnostic_context, reset_run_diagnostic_context
 from src.storage import AnalysisHistory, DatabaseManager
+from src.market_analyzer import MarketAnalyzer
 
 run_market_review = market_review_module.run_market_review
 
@@ -55,6 +57,43 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         notifier.is_available.return_value = True
         notifier.send.return_value = True
         return notifier
+
+    def test_market_review_overview_quality_reflects_missing_concepts(self) -> None:
+        overview = market_review_module._build_market_review_context_overview(
+            region="cn",
+            report_language="zh",
+            diagnostic_snapshot=None,
+            market_review_payload={
+                "region": "cn",
+                "indices": [{"code": "000001"}],
+                "breadth": {"up_count": 2000, "down_count": 3000},
+                "sectors": {"top": [{"name": "半导体"}], "bottom": []},
+                "concepts": {"top": [], "bottom": []},
+                "news": [{"title": "市场新闻"}],
+            },
+        )
+
+        self.assertEqual(overview["data_quality"]["overall_score"], 80)
+        self.assertEqual(overview["data_quality"]["level"], "usable")
+        concept = next(block for block in overview["blocks"] if block["key"] == "concepts")
+        self.assertEqual(concept["status"], "missing")
+        self.assertIn("concepts_missing", overview["warnings"])
+
+    def test_market_overview_uses_previous_session_on_non_trading_day(self) -> None:
+        analyzer = object.__new__(MarketAnalyzer)
+        analyzer.region = "cn"
+        analyzer.profile = SimpleNamespace(has_market_stats=False, has_sector_rankings=False)
+        analyzer._get_main_indices = MagicMock(return_value=[])
+        phase_context = SimpleNamespace(
+            is_trading_day=False,
+            session_date=date(2026, 8, 23),
+            effective_daily_bar_date=date(2026, 8, 21),
+        )
+
+        with patch("src.market_analyzer.build_market_phase_context", return_value=phase_context):
+            overview = analyzer.get_market_overview()
+
+        self.assertEqual(overview.date, "2026-08-21")
 
     def test_resolve_market_review_regions_returns_ordered_non_empty_list(self) -> None:
         cases = [

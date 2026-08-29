@@ -29,6 +29,8 @@ from api.v1.schemas.system_config import (
     TestLLMChannelResponse,
     TestNotificationChannelRequest,
     TestNotificationChannelResponse,
+    TestSearchProviderRequest,
+    TestSearchProviderResponse,
     UpdateSystemConfigRequest,
     UpdateSystemConfigResponse,
     ValidateSystemConfigRequest,
@@ -652,6 +654,42 @@ def test_notification_channel(
                 "error": "internal_error",
                 "message": "Failed to test notification channel",
             },
+        )
+
+
+@router.post(
+    "/config/search/test-provider",
+    response_model=TestSearchProviderResponse,
+    responses={
+        200: {"description": "Search provider test completed"},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Test one news-search provider",
+    description="Run one small search using unsaved or saved provider configuration without writing .env.",
+)
+def test_search_provider(
+    request: TestSearchProviderRequest,
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> TestSearchProviderResponse:
+    """Validate and test one search provider without persisting values."""
+    try:
+        payload = service.test_search_provider(
+            provider=request.provider,
+            items=[item.model_dump() for item in request.items],
+            mask_token=request.mask_token,
+            query=request.query,
+        )
+        return TestSearchProviderResponse.model_validate(payload)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "validation_error", "message": str(exc)},
+        )
+    except Exception as exc:
+        logger.error("Failed to test search provider: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "Failed to test search provider"},
         )
 
 

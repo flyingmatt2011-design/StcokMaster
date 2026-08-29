@@ -23,6 +23,8 @@ import type {
   TestGenerationBackendResponse,
   TestNotificationChannelRequest,
   TestNotificationChannelResponse,
+  TestSearchProviderRequest,
+  TestSearchProviderResponse,
   UpdateSystemConfigRequest,
   UpdateSystemConfigResponse,
   ValidateSystemConfigRequest,
@@ -123,6 +125,15 @@ function toSnakeNotificationTestPayload(payload: TestNotificationChannelRequest)
     title: payload.title ?? 'DSA 通知测试',
     content: payload.content ?? '这是一条来自 DSA Web 设置页的通知测试消息。',
     timeout_seconds: payload.timeoutSeconds ?? 20,
+  };
+}
+
+function toSnakeSearchTestPayload(payload: TestSearchProviderRequest): Record<string, unknown> {
+  return {
+    provider: payload.provider,
+    items: (payload.items || []).map((item) => ({ key: item.key, value: item.value })),
+    mask_token: payload.maskToken ?? '******',
+    query: payload.query ?? '贵州茅台 600519 最新公告',
   };
 }
 
@@ -290,6 +301,14 @@ export const systemConfigApi = {
       toSnakeNotificationTestPayload(payload),
     );
     return toCamelCase<TestNotificationChannelResponse>(response.data);
+  },
+
+  async testSearchProvider(payload: TestSearchProviderRequest): Promise<TestSearchProviderResponse> {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/system/config/search/test-provider',
+      toSnakeSearchTestPayload(payload),
+    );
+    return toCamelCase<TestSearchProviderResponse>(response.data);
   },
 
   async discoverLLMChannelModels(

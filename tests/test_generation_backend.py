@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """Tests for generation backend contracts and backend resolver semantics."""
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -35,6 +38,7 @@ def _config(**overrides):
         "generation_backend": "litellm",
         "generation_fallback_backend": "litellm",
         "agent_generation_backend": "auto",
+        "generation_backend_max_concurrency": 1,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -178,6 +182,41 @@ def test_litellm_backend_derives_provider_from_model_when_usage_is_empty() -> No
     assert result.provider == "anthropic"
     assert result.backend == LITELLM_BACKEND_ID
     assert result.usage == {}
+
+
+def test_litellm_backend_serializes_generation_across_backend_instances() -> None:
+    state_lock = threading.Lock()
+    first_started = threading.Event()
+    release_first = threading.Event()
+    active = 0
+    max_active = 0
+
+    def completion(prompt, _generation_config, **_kwargs):
+        nonlocal active, max_active
+        with state_lock:
+            active += 1
+            max_active = max(max_active, active)
+        if prompt == "first":
+            first_started.set()
+            assert release_first.wait(timeout=2)
+        with state_lock:
+            active -= 1
+        return "ok", "openai/gpt", {}
+
+    first_backend = LiteLLMGenerationBackend(completion, max_concurrency=1)
+    second_backend = LiteLLMGenerationBackend(completion, max_concurrency=1)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(first_backend.generate, "first", {})
+        assert first_started.wait(timeout=1)
+        second = executor.submit(second_backend.generate, "second", {})
+        time.sleep(0.05)
+        assert second.done() is False
+        release_first.set()
+        assert first.result(timeout=2).text == "ok"
+        assert second.result(timeout=2).text == "ok"
+
+    assert max_active == 1
 
 
 def test_generation_backend_factory_dispatches_litellm_and_local_cli_backends() -> None:

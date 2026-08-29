@@ -73,4 +73,29 @@ describe('ReportDetails', () => {
     const { container } = render(<ReportDetails />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it('renders valuation percentiles and chart patterns as context-only evidence', () => {
+    render(
+      <ReportDetails
+        details={{
+          valuationHistory: {
+            metrics: {
+              pe: { percentile: 11.08 },
+              pb: { percentile: 4.77 },
+              ps: { percentile: 4.54 },
+            },
+          },
+          chartPatternContext: {
+            summary: 'W底（形成中）',
+            scoreIncluded: false,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('补充数据上下文')).toBeInTheDocument();
+    expect(screen.getByText('仅作上下文 · 不参与现有评分')).toBeInTheDocument();
+    expect(screen.getByText('PE 11.1%')).toBeInTheDocument();
+    expect(screen.getByText('W底（形成中）')).toBeInTheDocument();
+  });
 });

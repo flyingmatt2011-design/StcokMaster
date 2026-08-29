@@ -99,6 +99,7 @@ def summarize_intel_coverage(
         total_results=total_results,
     )
 
+
 def format_intel_coverage_note(
     summary: IntelCoverageSummary,
     *,

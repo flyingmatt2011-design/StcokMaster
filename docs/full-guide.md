@@ -163,8 +163,8 @@ daily_stock_analysis/
 | `BOCHA_API_KEYS` | [博查搜索](https://open.bocha.cn/) Web Search API（中文搜索优化，支持AI摘要，多个key用逗号分隔） | 可选 |
 | `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/) API（隐私优先，美股优化，多个key用逗号分隔） | 可选 |
 | `MINIMAX_API_KEYS` | [MiniMax](https://platform.minimax.io/) Coding Plan Web Search（结构化搜索结果） | 可选 |
-| `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json）；留空时默认自动发现公共实例 | 可选 |
-| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `true`） | 可选 |
+| `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json） | 可选 |
+| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `false`） | 可选 |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638 ) Token | 可选 |
 | `TUSHARE_HTTP_URL` | Tushare Pro HTTP 接入地址；留空（或未设置/空白）时使用官方端点 `http://api.tushare.pro`，仅在需通过公司内网代理、跨境网络或自建镜像时填写 `http://` 或 `https://` 开头的完整地址 | 可选 |
 | `TICKFLOW_API_KEY` | [TickFlow](https://tickflow.org) API Key；可选，用于 A 股日 K、实时行情、股票列表/名称与大盘复盘增强；失败或权限不足时自动回退。 | 可选 |
@@ -196,6 +196,10 @@ daily_stock_analysis/
 #### ✅ 最小配置示例
 
 如果你想快速开始，最少需要配置以下项：
+
+本地或 StockMaster 桌面端可先执行 `copy .env.quickstart.example .env`（Windows）或 `cp .env.quickstart.example .env`（macOS/Linux），再填写模型密钥。该模板由 `src/core/config_profiles.py` 生成并由测试校验；`.env.example` 仍是全部高级配置的完整参考。
+
+启动配置校验默认为 `CONFIG_VALIDATE_MODE=warn`，会按 error/warning/info 记录问题但继续启动；设为 `strict` 后，只有 error 级配置问题会阻止启动，可选数据源和通知渠道缺失仍按原有降级语义处理。
 
 1. **AI 模型**：`ANSPIRE_API_KEYS`（一 Key 同时启用大模型和搜索）、`AIHUBMIX_KEY`（[AIHubmix](https://inferera.com/?aff=CfMq)，一 Key 多模型）、`GEMINI_API_KEY` 或 `OPENAI_API_KEY`
 2. **通知渠道**：至少配置一个，如 `WECHAT_WEBHOOK_URL` 或 `EMAIL_SENDER` + `EMAIL_PASSWORD`
@@ -241,7 +245,7 @@ daily_stock_analysis/
 | `GENERATION_FALLBACK_BACKEND` | backend 级 fallback；未配置默认 `litellm`，空值禁用，self fallback 解析为 no-op | `litellm` | 否 |
 | `GENERATION_BACKEND_TIMEOUT_SECONDS` | 单次 generation backend 调用超时秒数，主要用于本地 CLI backend；范围 `1-3600` | `300` | 否 |
 | `GENERATION_BACKEND_MAX_OUTPUT_BYTES` | 单次本地 CLI backend 诊断 stdout/stderr 与最终响应捕获总上限；`--output-last-message` 重复打印到 stdout 的最终响应不重复计入；范围 `1-33554432` | `1048576` | 否 |
-| `GENERATION_BACKEND_MAX_CONCURRENCY` | generation backend 全局并发上限；范围 `1-16`，不改变 LiteLLM Router / `MAX_WORKERS` 行为 | `1` | 否 |
+| `GENERATION_BACKEND_MAX_CONCURRENCY` | 进程级模型生成并发上限；范围 `1-16`，适用于 LiteLLM（官方 API / 中转渠道）和本地 CLI，不限制行情与新闻准备并发 | `1` | 否 |
 | `LOCAL_CLI_BACKEND_MAX_CONCURRENCY` | 本地 CLI backend 并发上限；范围 `1-4`，有效并发取它与 `GENERATION_BACKEND_MAX_CONCURRENCY` 的较小值 | `1` | 否 |
 | `AGENT_BACKEND` | 现有问股 Chat 的运行方式：`auto`（推荐，保持默认模型）、`litellm` 或 `codex_app_server`（实验，仅 single-agent Chat） | `auto` | 否 |
 | `AGENT_GENERATION_BACKEND` | Agent Chat 生成后端；Web 设置页仅暴露 `auto|litellm`，手写 local CLI backend 会返回 unsupported tool-calling 诊断 | `auto` | 否 |
@@ -369,14 +373,14 @@ daily_stock_analysis/
 | `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search（结构化搜索结果） | 可选 |
 | `SOCIAL_SENTIMENT_API_KEY` | Stock Sentiment API Key（Reddit / X / Polymarket，可选） | 可选 |
 | `SOCIAL_SENTIMENT_API_URL` | Stock Sentiment API 地址（默认 `https://api.adanos.org`） | 可选 |
-| `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json）；留空时默认自动发现公共实例 | 可选 |
-| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `true`） | 可选 |
+| `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json） | 可选 |
+| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `false`） | 可选 |
 | `NEWS_STRATEGY_PROFILE` | 新闻策略窗口档位：`ultra_short`(1天)/`short`(3天)/`medium`(7天)/`long`(30天)；实际窗口取与 `NEWS_MAX_AGE_DAYS` 的最小值 | 默认 `short` |
 | `NEWS_MAX_AGE_DAYS` | 新闻最大时效（天），搜索时限制结果在近期内 | 默认 `3` |
 | `NEWS_SEARCH_MAX_WORKERS` | 多维情报搜索最大并发数（1-10）；默认保守设置为 3，调高可能触发搜索 API 限流 | 默认 `3` |
 | `BIAS_THRESHOLD` | 乖离率阈值（%），超过提示不追高；强势趋势股自动放宽到 1.5 倍 | 默认 `5.0` |
 
-> 行为说明：搜索服务与社交舆情服务为可选增强链路。失败时主流程保持 fail-open；新闻上下文会明确区分 `COVERED`、`EMPTY_CONFIRMED`、`PARTIAL`、`UNAVAILABLE`，避免把“源不可用”误读成“没有利空”。结构化情报与通用搜索并行执行，通用搜索内部维度受 `NEWS_SEARCH_MAX_WORKERS` 限制。
+> 行为说明：搜索服务与社交舆情服务为可选增强链路。任一服务初始化失败时，系统会记录 warning 并保持主流程继续；新闻上下文会明确区分 `COVERED`、`EMPTY_CONFIRMED`、`PARTIAL`、`UNAVAILABLE`，避免把“源不可用”误读成“没有利空”。结构化情报与通用搜索并行执行，通用搜索内部维度受 `NEWS_SEARCH_MAX_WORKERS` 限制。StockMaster 桌面端可在“设置 > 新闻搜索 API”中保存并逐个测试 Bocha、Tavily、Brave、SerpAPI 和自建 SearXNG。公共 SearXNG 默认关闭；显式开启后若候选实例连续失败，会临时熔断 15 分钟，避免每个新闻维度重复等待。
 
 ### 新闻检索可解释排序（Issue #1356）
 
@@ -440,6 +444,8 @@ daily_stock_analysis/
 
 > 行为说明：
 > - A 股：按 `valuation/growth/earnings/institution/capital_flow/dragon_tiger/boards` 聚合能力返回；
+> - A 股基本面无需配置 Tushare Token：季度盈利、成长、现金流质量、业绩预告/快报和现金分红会优先使用免 Token 的 BaoStock 补齐，机构持仓、十大流通股东与资金流继续由 AKShare 公共接口补充；成功结果按最近工作日写入数据库同目录下的 `provider_cache`，周末复用周五缓存，写入失败仍按 fail-open 继续分析；
+> - A 股个股分析会并行补取东方财富结构化公告/研报与深交所互动易问答；公告遵循当前新闻窗口，研报与互动问答使用各自的有限回看窗口并保留明确发布日期。东方财富历史估值补充五年 PE/PB/PS 经验分位，失败时由 AKShare 百度估值接口降级；这些字段只进入分析上下文和报告详情，不改变评分公式或建议阈值；
 > - ETF：返回可得项，缺失能力标记为 `not_supported`，整体不影响原流程；
 > - 美股/港股：通过 yfinance 适配器返回 `valuation/growth/earnings/belong_boards`（来源 `info.sector`/`industry`），`institution/capital_flow/dragon_tiger/boards` 暂无对应数据源仍标记 `not_supported`；yfinance 不可用或字段缺失时整体降级回 `not_supported`，仍走 fail-open；
 > - 日股/韩股：当前仅走 Yfinance 基础路径获取日线与实时行情；`institution`、`capital_flow`、`dragon_tiger`、`boards` 等依赖 A 股专属源/离岸完整版的能力会降级为 `not_supported`（详见 [市场支持与边界](market-support.md)）；
@@ -454,6 +460,7 @@ daily_stock_analysis/
 > - TickFlow 官方 quickstart 提供了 `quotes.get(universes=["CN_Equity_A"])` 用法，但不同 API Key 不一定拥有对应权限；批量日 K、深度和财务等能力也按权限 fail-open。
 > - TickFlow 实际返回的 `change_pct` / `amplitude` 为比例值；系统已在接入层统一转换为百分比值，确保与现有数据源字段语义一致。
 > - A 股大盘复盘报告采用盘后工作台式结构：固定包含盘面信号、指数明细、板块 Top 表、近三日市场线索、明日交易计划和风险提示；盘面信号以 `66/100（偏暖，可进攻）` 这类纯文本分数表达，避免色块进度条在不同终端显示不一致；近三日市场线索只列标题、来源和链接，不再展示搜索摘要片段；若部分数据源缺失，则保留可用区块并在对应位置降级展示。
+> - A 股大盘复盘还会 best-effort 补充 AKShare 公共接口的 50ETF QVIX、股债利差、巴菲特指标和创新高/创新低家数；个股日线会确定性识别 W 底、V 型、杯柄、三重底与上涨后回踩。两类结果均标记为“仅作上下文”，不进入现有 Market Light 分数、个股技术评分或买卖判断。
 > - 字段契约：
 >   - `fundamental_context.belong_boards` = 个股关联板块列表；A 股从 AkShare 板块名单写入，美股/港股从 yfinance `info.sector` / `info.industry` 写入，无数据时为 `[]`；
 >   - `fundamental_context.boards.data` = `sector_rankings`（板块涨跌榜，结构 `{top, bottom}`，HK/US 当前不提供）；
@@ -489,6 +496,10 @@ daily_stock_analysis/
 | `SCHEDULE_TIMES` | 多个定时执行时间，逗号分隔；为空时使用 `SCHEDULE_TIME` | 空 |
 | `LOG_DIR` | 日志目录 | `./logs` |
 | `SAVE_CONTEXT_SNAPSHOT` | 保存分析历史 `context_snapshot`；设为 `false` 时新历史不保存 enhanced_context、market_phase_summary、AnalysisContextPack overview 或诊断快照，但不关闭当次 Prompt 低敏摘要 | `true` |
+
+StockMaster 桌面端的自选股批量分析会同时保留最多 2 个活动任务，并在任一任务完成后补充下一只。点击“停止分析”后不会再提交新股票，已经开始的任务会正常完成。该调度仅缩短批量等待时间，不改变单股分析策略、评分逻辑或数据源优先级；后端任务队列的总并发上限仍由 `MAX_WORKERS` 控制。
+
+桌面端启用共享抓取缓存时，会在启动后后台预热并复用当天的 A 股大盘上下文；首页会从最近一次持久化大盘复盘中自动恢复指数与涨跌家数。自选股列表的买点、止损点和 MA5 乖离率来自该股票最近一次已落库报告，不参与二次计算，也不修改评分规则。筹码数据只会复用当前有效交易日内成功取得的缓存，过期缓存不会进入分析。
 
 ---
 
@@ -1563,6 +1574,8 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 ### 功能特性
 
 - 📝 **配置管理** - 查看/修改自选股列表
+- 🔄 **首页轻量行情刷新** - 打开或重新加载首页时立即刷新大盘行情；窗口处于可见且激活状态时每 5 分钟刷新一次。该刷新只读取指数、涨跌家数和板块行情，不搜索新闻、不调用 LLM、不写分析历史，因此不消耗模型 Token；手动“大盘复盘”仍执行完整新闻与 LLM 分析，并在完成后更新首页数据。
+- ⚡ **自选股实时价格** - 首页打开、自选代码变化及窗口重新激活时先读取 A 股交易阶段，仅在开市状态下使用单次批量行情请求；午休、收盘后、周末和交易所节假日不会访问公共行情源，手工刷新不受限制。自动刷新由 A 股交易所日历驱动：交易时段每 5 秒刷新，批量分析期间降为 30 秒，并在下一交易阶段自动恢复。后端使用进程级 3 秒共享缓存并合并并发行情请求；批量源短暂失败时保留最近一次成功价格，失败代码按 5/15/30/60 秒单独退避，不扩散成逐只多源重试。列表展示刷新阶段、数据源、最后成功时间和旧行情状态；最近分析时间仍表示报告生成时间，不会被报价时间覆盖。股票分析摘要只在页面进入、窗口重新可见、手工刷新或任务完成后更新，不再参与 30 秒后台轮询。
 - 🗂️ **首页三视图** - 首页提供「历史 / 自选 / 今日」工作区，默认进入历史视图；移动端抽屉内三个列表均由各自的内层视口承接纵向触摸滚动，外层卡片不会截断手势，桌面端仍保留卡片边界裁剪；自选股行可用鼠标或键盘打开已确认的最新分析详情，提示始终跟随当前的查找中、查找失败或确认无详情状态；任何 stock-bar 请求及完成任务后的数据刷新都会在开始时进入待确认状态，重新确认或状态未知期间不会开放旧 stock-bar 或 fallback 报告；自选页刷新会同时重试列表和详情状态，逐股票详情补查使用固定并发上限，并在刷新或页面状态切换时取消已失效批次；支持批量提交全部或仅提交“今日未分析”股票
 - 📌 **任务面板折叠** - 首页任务面板可折叠/展开，折叠后保留 pending/processing 摘要并把更多侧栏空间让给自选股列表；折叠状态在当前页面会话内保持
 - 🧭 **界面语言切换** - 登录态与退出态均支持界面语言快速切换（`zh` / `en`），独立于 `REPORT_LANGUAGE`，用于静态 UI 文案与导航骨架
@@ -1596,6 +1609,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 |------|------|------|
 | `/api/v1/analysis/analyze` | POST | 触发股票分析 |
 | `/api/v1/analysis/market-review` | POST | 后台触发大盘复盘；请求体可传 `{"send_notification": true, "region": "cn,us"}`；`region` 仅覆盖本次请求，与 `main.py --market-review` 与 `bot` 复用同一套 `GeminiAnalyzer/SearchService/NotificationService` 组装语义 |
+| `/api/v1/analysis/market-snapshot?region=cn` | GET | 获取首页纯行情大盘快照；不搜索新闻、不调用 LLM、不持久化报告 |
 | `/api/v1/analysis/tasks` | GET | 查询任务列表 |
 | `/api/v1/analysis/tasks/stream` | GET (SSE) | 订阅任务实时状态流；`task_progress` 可选携带 `flow_event` 增量运行流事件 |
 | `/api/v1/analysis/tasks/{task_id}/flow` | GET | 查询 active task 的运行流快照 |
@@ -1626,6 +1640,8 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 | `/api/v1/backtest/performance/{code}` | GET | 获取单股回测表现 |
 | `/api/v1/stocks/extract-from-image` | POST | 从图片提取股票代码（multipart，超时 60s） |
 | `/api/v1/stocks/parse-import` | POST | 解析 CSV/Excel/剪贴板（multipart file 或 JSON `{"text":"..."}`，文件≤2MB，文本≤100KB） |
+| `/api/v1/stocks/quotes` | POST | 批量获取自选股实时行情；请求体为 `{"stock_codes":["600519","000001"]}`，允许部分成功且不调用 LLM；行情项附带 `source`、`last_success_at`、`is_stale`、`refresh_status`、`failure_count` 与 `next_retry_at` |
+| `/api/v1/stocks/quotes/refresh-policy` | GET | 返回 A 股当前交易阶段、开市状态及下一阶段边界；不访问行情源、不调用 LLM |
 | `/api/health` | GET | 健康检查 |
 | `/docs` | GET | API Swagger 文档 |
 

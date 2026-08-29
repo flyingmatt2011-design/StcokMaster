@@ -20,6 +20,7 @@ ensure_litellm_stub()
 from src.analyzer import AnalysisResult
 from src.core.pipeline import StockAnalysisPipeline
 from src.enums import ReportType
+from src.services.analysis_retry_context import prepared_analysis_retry_cache
 
 
 class _TrackingNotifier:
@@ -143,9 +144,15 @@ class TestPipelineSingleStockNotify(unittest.TestCase):
             single_stock_notify=True,
             report_type=ReportType.BRIEF,
             analysis_query_id="query-1",
+            force_refresh=True,
         )
 
         self.assertIsNotNone(result)
+        pipeline.fetch_and_save_stock_data.assert_called_once_with(
+            "600519",
+            force_refresh=True,
+            current_time=None,
+        )
         pipeline.notifier.generate_brief_report.assert_called_once_with([result])
         pipeline.notifier.send.assert_called_once_with(
             "brief:600519",
@@ -218,6 +225,52 @@ class TestPipelineSingleStockNotify(unittest.TestCase):
         self.assertFalse(result.success)
         pipeline.notifier.generate_brief_report.assert_not_called()
         pipeline.notifier.send.assert_not_called()
+
+    def test_process_single_stock_reuses_prepared_context_without_refetching(self):
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.fetch_and_save_stock_data = MagicMock(return_value=(True, None))
+        pipeline.analyze_stock = MagicMock(return_value=_make_result("600519"))
+        pipeline._generate_and_finalize_prepared_analysis = MagicMock(
+            return_value=_make_result("600519")
+        )
+        pipeline.notifier = _TrackingNotifier()
+        prepared_context = {
+            "code": "600519",
+            "stock_name": "贵州茅台",
+            "enhanced_context": {"realtime": {"price": 1}},
+            "news_context": "news",
+            "news_result_count": 1,
+            "analysis_context_pack_summary": {},
+            "analysis_context_pack_overview": {},
+            "realtime_quote": object(),
+            "chip_data": object(),
+            "trend_result": object(),
+            "fundamental_context": {},
+            "market_structure_context": {},
+            "market_phase_summary": {},
+            "portfolio_context": None,
+        }
+        prepared_analysis_retry_cache.put("600519", prepared_context)
+        try:
+            result = pipeline.process_single_stock(
+                code="600519",
+                skip_analysis=False,
+                single_stock_notify=False,
+                report_type=ReportType.BRIEF,
+                analysis_query_id="retry-query",
+                force_refresh=True,
+            )
+        finally:
+            prepared_analysis_retry_cache.delete("600519")
+
+        self.assertTrue(result.success)
+        pipeline.fetch_and_save_stock_data.assert_not_called()
+        pipeline.analyze_stock.assert_not_called()
+        pipeline._generate_and_finalize_prepared_analysis.assert_called_once_with(
+            query_id="retry-query",
+            report_type=ReportType.BRIEF,
+            **prepared_context,
+        )
 
 
 if __name__ == "__main__":

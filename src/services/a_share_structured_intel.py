@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 import requests
 
 from data_provider.base import normalize_stock_code
-from src.search_service import SearchResponse, SearchResult
+from src.search_provider_base import SearchResponse, SearchResult
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
 
 logger = logging.getLogger(__name__)

@@ -20,6 +20,8 @@
 | A 股日线 / 技术面 | Efinance、Tencent、AkShare、Tushare、Pytdx、Baostock、YFinance | `DataFetcherManager` 按优先级尝试；配置 `TUSHARE_TOKEN` 后 Tushare 自动进入候选源 | 单源失败后尝试下一个源；连续失败会短期熔断该源 |
 | A 股实时行情 | Tencent、AkShare Sina、Efinance、AkShare EM、Tushare | `REALTIME_SOURCE_PRIORITY` 控制顺序，默认偏向 Tencent / Sina 这类轻量源 | 失败源记录 `fallback_from`，成功源继续返回 |
 | A 股大盘复盘 | TickFlow、AkShare、Tushare、Efinance | 配置 `TICKFLOW_API_KEY` 后，主指数和市场宽度优先尝试 TickFlow | TickFlow 权限不足或失败时回退 AkShare / Tushare / Efinance 链路 |
+| A 股结构化情报 | 东方财富公告、东方财富研报、深交所互动易 | 与通用新闻搜索并行补充直接证据，按发布日期窗口过滤并落入现有新闻记录 | 单个结构化源失败只缺失对应维度，通用新闻搜索与分析主链继续运行 |
+| A 股历史估值 / 风险环境 | 东方财富估值、AKShare 百度估值、AKShare 乐咕/QVIX | 个股补充五年 PE/PB/PS 分位；大盘补充 QVIX、股债利差、巴菲特指标、创新高/新低 | 单项失败标记 partial 并缓存同交易日成功结果；所有字段仅作上下文，不参与评分 |
 | 选股快照 | Tushare、Sina、Efinance、AkShare EM、EastMoney Datacenter | 有 `TUSHARE_TOKEN` 时自动把 `tushare` 放入快照优先级；否则使用免费源链路 | 选股引擎维护 source health；状态接口透出 snapshot/daily health |
 | 选股日线补特征 | `DataFetcherManager` | 选股引擎优先复用现有日线与缓存链路 | 现有链路失败后才回到引擎自身的日线源 |
 | 选股热点题材 | EastMoney provider、参考 AlphaSift 的 hotspot 实现、last-good cache | 未指定 provider 时默认使用 EastMoney provider | 实时失败时回退热点缓存；无缓存时返回稳定空态和可读错误 |

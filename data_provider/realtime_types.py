@@ -227,6 +227,8 @@ class ChipDistribution:
             'cost_90_low': self.cost_90_low,
             'cost_90_high': self.cost_90_high,
             'concentration_90': self.concentration_90,
+            'cost_70_low': self.cost_70_low,
+            'cost_70_high': self.cost_70_high,
             'concentration_70': self.concentration_70,
         }
     

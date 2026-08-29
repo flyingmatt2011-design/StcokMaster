@@ -1,6 +1,7 @@
 import type React from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import type { AnalysisReport, HistoryItem, StockHistoryFilters, StockHistoryRange } from '../../types/analysis';
+import { historyApi } from '../../api/history';
 import { getSentimentColor } from '../../types/analysis';
 import {
   buildDecisionActionLabelMap,
@@ -186,9 +187,10 @@ export const StockHistoryTrendDrawer: React.FC<StockHistoryTrendDrawerProps> = (
   onSelectRecord,
   onRetry,
 }) => {
-  const { t } = useUiLanguage();
+  const { language, t } = useUiLanguage();
   const currentRecordId = report.meta.id;
   const [selectedRecordId, setSelectedRecordId] = useState(currentRecordId);
+  const [previousReport, setPreviousReport] = useState<AnalysisReport | null>(null);
   const actionLabels = useMemo(() => buildDecisionActionLabelMap(t), [t]);
   const summary = useMemo(
     () => summarizeView(items, report, t, actionLabels, currentRecordId),
@@ -198,6 +200,42 @@ export const StockHistoryTrendDrawer: React.FC<StockHistoryTrendDrawerProps> = (
   useEffect(() => {
     setSelectedRecordId(currentRecordId);
   }, [currentRecordId]);
+
+  const previousItem = useMemo(() => (
+    [...items]
+      .filter((item) => item.id !== currentRecordId)
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0]
+  ), [currentRecordId, items]);
+
+  useEffect(() => {
+    let active = true;
+    setPreviousReport(null);
+    if (!previousItem) return () => { active = false; };
+    void historyApi.getDetail(previousItem.id)
+      .then((detail) => { if (active) setPreviousReport(detail); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [previousItem]);
+
+  const currentAdvice = formatAdvice({
+    operationAdvice: report.summary.operationAdvice,
+    action: report.summary.action,
+    actionLabel: report.summary.actionLabel,
+    trendPrediction: report.summary.trendPrediction,
+  }, actionLabels);
+  const previousAdvice = previousItem ? formatAdvice(previousItem, actionLabels) : '--';
+  const scoreDelta = previousItem && typeof previousItem.sentimentScore === 'number' && typeof report.summary.sentimentScore === 'number'
+    ? report.summary.sentimentScore - previousItem.sentimentScore
+    : null;
+  const formatLevels = (target?: AnalysisReport | null) => {
+    if (!target?.strategy) return '--';
+    const values = [
+      target.strategy.idealBuy ? `${language === 'en' ? 'Support' : '支撑'} ${target.strategy.idealBuy}` : null,
+      target.strategy.stopLoss ? `${language === 'en' ? 'Stop' : '止损'} ${target.strategy.stopLoss}` : null,
+      target.strategy.takeProfit ? `${language === 'en' ? 'Target' : '目标'} ${target.strategy.takeProfit}` : null,
+    ].filter(Boolean);
+    return values.join(' · ') || '--';
+  };
 
   return (
     <div className="space-y-4 animate-fade-in">
@@ -248,6 +286,37 @@ export const StockHistoryTrendDrawer: React.FC<StockHistoryTrendDrawerProps> = (
         </Card>
       ) : (
         <>
+          {previousItem ? (
+            <div data-testid="history-report-comparison">
+            <Card variant="bordered" padding="md" className="home-panel-card">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="label-uppercase">{language === 'en' ? 'Change since previous run' : '与上次分析对比'}</p>
+                  <p className="mt-1 text-xs text-muted-text">{formatDateTime(previousItem.createdAt)} → {formatDateTime(report.meta.createdAt)}</p>
+                </div>
+                {scoreDelta !== null ? (
+                  <Badge variant={scoreDelta > 0 ? 'success' : scoreDelta < 0 ? 'danger' : 'default'} className="shadow-none">
+                    {language === 'en' ? 'Score' : '评分'} {scoreDelta > 0 ? '+' : ''}{scoreDelta}
+                  </Badge>
+                ) : null}
+              </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-3">
+                <div className="home-subpanel p-3">
+                  <p className="text-xs text-muted-text">{language === 'en' ? 'Advice' : '建议变化'}</p>
+                  <p className="mt-1 text-sm font-medium text-foreground">{previousAdvice} → {currentAdvice}</p>
+                </div>
+                <div className="home-subpanel p-3">
+                  <p className="text-xs text-muted-text">{language === 'en' ? 'Trend' : '趋势变化'}</p>
+                  <p className="mt-1 text-sm font-medium text-foreground">{previousItem.trendPrediction || '--'} → {report.summary.trendPrediction || '--'}</p>
+                </div>
+                <div className="home-subpanel p-3">
+                  <p className="text-xs text-muted-text">{language === 'en' ? 'Key levels' : '关键点位变化'}</p>
+                  <p className="mt-1 text-xs leading-5 text-secondary-text">{formatLevels(previousReport)} → {formatLevels(report)}</p>
+                </div>
+              </div>
+            </Card>
+            </div>
+          ) : null}
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
             <MetricCard
               label={t('stockTrend.records')}

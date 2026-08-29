@@ -42,6 +42,9 @@ class HistoryItem(BaseModel):
     change_pct: Optional[float] = Field(None, description="分析时涨跌幅(%)")
     volume_ratio: Optional[float] = Field(None, description="分析时量比")
     turnover_rate: Optional[float] = Field(None, description="分析时换手率")
+    ideal_buy: Optional[str] = Field(None, description="最新报告理想买点")
+    stop_loss: Optional[str] = Field(None, description="最新报告止损点")
+    bias_ma5: Optional[float] = Field(None, description="最新报告 MA5 乖离率(%)")
     model_used: Optional[str] = Field(
         None,
         description="分析历史记录中的模型快照，仅用于展示历史元数据；不参与模型配置或运行时路由决策",
@@ -102,12 +105,18 @@ class NewsIntelItem(BaseModel):
     title: str = Field(..., description="新闻标题")
     snippet: str = Field("", description="新闻摘要（最多200字）")
     url: str = Field(..., description="新闻链接")
+    source: Optional[str] = Field(None, description="新闻来源")
+    published_date: Optional[str] = Field(None, description="发布日期（YYYY-MM-DD）")
+    dimension: Optional[str] = Field(None, description="资讯维度")
 
     model_config = ConfigDict(json_schema_extra={
         "example": {
             "title": "公司发布业绩快报，营收同比增长 20%",
             "snippet": "公司公告显示，季度营收同比增长 20%...",
-            "url": "https://example.com/news/123"
+            "url": "https://example.com/news/123",
+            "source": "example.com",
+            "published_date": "2026-08-20",
+            "dimension": "latest_news"
         }
     })
 
@@ -266,9 +275,28 @@ class ReportDetails(BaseModel):
     sector_rankings: Optional[Any] = Field(None, description="板块涨跌榜（结构 {top, bottom}）")
     concept_rankings: Optional[Any] = Field(None, description="概念板块涨跌榜（结构 {top, bottom}）")
     market_structure: Optional[Any] = Field(None, description="市场结构上下文（题材层 + 个股位置层）")
+    valuation_history: Optional[Any] = Field(None, description="历史 PE/PB/PS 估值分位（仅作上下文）")
+    chart_pattern_context: Optional[Any] = Field(None, description="确定性图形形态（不参与评分）")
+
+    core_conclusion: Optional[str] = Field(None, description="StockMaster structured core conclusion")
+    risk_alerts: List[str] = Field(default_factory=list, description="StockMaster structured risk alerts")
+    positive_catalysts: List[str] = Field(default_factory=list, description="StockMaster structured catalysts")
+    support_level: Optional[str] = Field(None, description="StockMaster structured support level")
+    resistance_level: Optional[str] = Field(None, description="StockMaster structured resistance level")
 
     @model_validator(mode="after")
     def populate_context_derived_details(self) -> "ReportDetails":
+        if self.valuation_history is None or self.chart_pattern_context is None:
+            try:
+                from src.utils.data_processing import extract_context_enrichment_detail_fields
+
+                extracted_context = extract_context_enrichment_detail_fields(self.context_snapshot)
+                if self.valuation_history is None:
+                    self.valuation_history = extracted_context.get("valuation_history")
+                if self.chart_pattern_context is None:
+                    self.chart_pattern_context = extracted_context.get("chart_pattern_context")
+            except Exception:
+                pass
         if self.concept_rankings is None and self.context_snapshot is not None:
             try:
                 from src.utils.data_processing import extract_board_detail_fields
@@ -341,6 +369,12 @@ class MarkdownReportResponse(BaseModel):
 class StockBarItem(BaseModel):
     """个股栏条目（去重后的股票维度摘要）"""
 
+    current_price: Optional[float] = Field(None, description="latest analysis current price")
+    change_pct: Optional[float] = Field(None, description="latest analysis change percent")
+    trend_prediction: Optional[str] = Field(None, description="latest upstream trend prediction")
+    ideal_buy: Optional[str] = Field(None, description="latest report ideal entry")
+    stop_loss: Optional[str] = Field(None, description="latest report stop loss")
+    bias_ma5: Optional[float] = Field(None, description="latest report MA5 deviation percent")
     id: int = Field(..., description="该股最新一次分析的历史记录主键 ID")
     stock_code: str = Field(..., description="股票代码")
     stock_name: Optional[str] = Field(None, description="股票名称")

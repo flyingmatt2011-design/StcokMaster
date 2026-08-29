@@ -9,9 +9,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 自选股行情在首页打开、代码变化或窗口重新激活时先检查 A 股交易阶段，午休、收盘后、周末和节假日不再访问公共行情源；同时移除股票摘要的 30 秒后台轮询，避免非交易时段列表持续出现刷新状态，手工刷新不受影响。
+- [修复] 桌面本地启动同步自选股行情刷新 API 时一并同步交易日历依赖，避免活动算法运行目录缺少 `get_next_quote_refresh_transition` 导致 FastAPI 在健康检查前退出。
+- [改进] 自选股批量行情增加进程级 3 秒共享缓存与并发请求合并；失败代码按 5/15/30/60 秒单独退避并保留最后成功行情，首页同步展示刷新阶段、行情来源、最后成功时间和旧行情状态，分析时间语义保持不变。
+- [修复] 题材资讯同一缓存请求的等待时间严格限制在调用方剩余预算内，避免浮点误差导致超时边界扩大。
+- [测试] Web 全栈冒烟检测兼容认证开启与关闭两种启动模式，并覆盖 StockMaster 三页导航和窄屏布局。
+- [修复] 修复分析任务列表对旧任务对象的兼容、实时行情主数据源选择、数据库重置连接释放与同时间戳对话排序，并补齐 Windows 配置隔离、资讯抓取 Mock 隔离和 SQLite 测试稳定性。
+- [修复] 登录页统一使用 StockMaster 品牌，更新三核心页面浏览器冒烟测试，并兼容 Windows 无符号链接工作区的 AI 资产校验。
+- [新功能] StockMaster 首页打开时及激活窗口下每 5 分钟刷新纯行情大盘快照；自选股在 A 股交易时段每 5 秒批量刷新，批量分析期间降为 30 秒，午休、收盘后、周末和交易所节假日暂停，窗口重新激活时立即刷新一次。两类刷新均不调用 LLM、不消耗模型 Token，手动大盘复盘仍保留完整分析链路。
+- [修复] 算法三方合并在真实冲突时改为整文件保留 StockMaster 版本，并在候选校验中初始化内存数据库，避免局部合并留下缺少方法实现的跨代码块语义残缺。
+- [改进] 上游后端算法同步改为基于固定共同基线的三方合并，自动吸收兼容更新、冲突时保留 StockMaster 本轮实现，并持久化合并证据供设置页和重启重放使用。
+- [修复] 桌面本地启动同步后端覆盖文件时补齐其拆分模块依赖，避免活动算法运行时因缺少估值、配置分类、结构化情报等模块而在健康检查前退出。
 - [修复] 情报源为空时明确区分已覆盖无结果、部分降级和完全不可用，避免将“无数据”误读为“无风险”。
 - [改进] 结构化情报与通用搜索并行执行，多维搜索支持保守可配置并发并保持确定性合并顺序。
+- [文档] 新增 StockMaster 股票分析流程图，说明批量调度、数据并行聚合、模型 fallback、评分边界、结果持久化和主要耗时阶段。
 - [新功能] A 股个股分析新增免密钥的结构化公司公告、机构研报与互动易证据，并严格按发布日期窗口过滤后复用现有新闻持久化和报告链路。
+- [改进] A 股基本面补充五年 PE/PB/PS 历史分位，趋势上下文补充 W 底、V 型、杯柄、三重底和回踩形态，大盘复盘补充 QVIX、股债利差、巴菲特指标及创新高/新低；所有新增项明确不参与现有评分与买卖判断。
+- [改进] A 股筹码分布在在线接口失败后使用 BaoStock 日线和换手率进行本地估算，复用现有筹码字段契约且不改变评分与买卖判断逻辑。
+- [修复] StockMaster 首页自动回读最近一次大盘复盘快照，恢复 A 股指数与涨跌家数展示；历史摘要和 StockBar API 补充最新买点、止损点与 MA5 乖离率，自选股列表不再固定显示空值。
+- [改进] 桌面启动后后台预热并跨任务复用当日大盘上下文；新闻准入剔除正文中带明确过期日期的无发布时间旧闻，资金流榜单未命中目标股时继续单股 fallback，筹码在线源失败时可复用同交易日成功缓存，评分公式保持不变。
+- [改进] 多股分析保持行情与新闻阶段并行，但对官方 API、中转渠道和本地 CLI 的报告生成实施进程级并发上限；LLM 失败后短期保留已准备上下文，手动重试仅重新执行 LLM 与报告整理，不改变分析策略和评分规则。
+- [改进] 自选股批量分析由逐只串行改为最多 2 只受控并行，停止后不再补充新任务、已开始任务正常完成；单股分析策略、评分规则与后端数据源优先级保持不变。
+- [修复] 将 Efinance A 股及 ETF 的日线、实时成交量由“手”统一换算为“股”，启动时幂等修复旧数据库中可确认的单位错位行，并接通 API `force_refresh` 到日线抓取，避免旧缓存继续造成虚假百倍放量；桌面本地启动同步对应存储模块及其时间依赖；多模型分析在流式空响应时直接切换下一部署，并记录最终实际成功模型，减少重复等待且不改变评分规则。
+- [改进] 个股汇总报告将资讯动态收窄到分析主栏，并紧接分析要点展示，提升首屏信息连续性与默认窗口可读性。
+- [修复] 分析输入在非交易日不再把上一交易日实时快照伪装成当日 K 线；财务数据落后于更新披露期时主动补取并标记限制，新闻过滤股吧及明显过期的无日期研报，同时统一持久化新闻证据数量并如实展示资金流、筹码缺失状态。
+- [修复] 本地 BAT 启动同步分析管线时一并复制 `pipeline_helpers.py` 与 `analysis_text_normalization.py`，避免活动算法运行时因缺少拆分后的配套模块导致启动或点击分析时报错。
+- [改进] A 股基本面增加免 Token 的 BaoStock 财务、业绩与分红 fallback，修正 AKShare 机构/十大流通股东查询参数，并按交易日缓存财务、机构及全市场资金流数据，不改变既有评分规则。
+- [修复] 盘中实时行情覆盖日线时保留数据库最新交易日作为上一交易日，避免跨日比较跳过一个交易日。
+- [修复] 基本面阶段复用已获取的实时行情并并发执行独立能力，新增同花顺 A 股主力资金流共享预取、概念榜及新浪行业榜降级，并在筹码在线源短时失败时复用本次运行最近成功结果，避免慢接口耗尽预算后关键输入完全未执行。
+- [修复] 大盘复盘在非交易日使用最近交易日，并按指数、宽度、行业、概念和新闻的实际覆盖计算数据质量，不再在概念榜缺失时显示 100 分。
+- [改进] 本地 BAT 启动将 StockMaster 数据质量修复文件受控同步到已激活算法运行时，确保本地修复实际生效且不改变评分公式。
+- [修复] 窄导航中的主题菜单使用独立弹层尺寸与选项间距，避免浅色、深色和跟随系统选项被导航按钮样式挤压。
+- [改进] Web 工作台与个股报告统一为高密度交易终端视觉，引入自托管 IBM Plex 字体、红涨绿跌与琥珀交互语义、命令栏、盯盘表、主从报告导航及矩形数据面板，保持分析算法、评分规则和 API 契约不变。
+- [改进] 运行诊断聚合展示每条数据源 fallback 链路的尝试顺序、累计耗时、最终来源与链路耗尽原因，并在分析上下文结束时输出一次终态日志。
+- [改进] 启动流程接通结构化配置严重级别，默认 `warn` 保持兼容，`CONFIG_VALIDATE_MODE=strict` 在 error 级配置问题存在时停止启动。
+- [改进] 新增可生成校验的 `.env.quickstart.example`，StockMaster 设置页增加基础/高级层级，完整 `.env.example` 继续作为高级配置真源。
+- [改进] 在保持旧导入路径不变的前提下，提取配置分类、搜索 Provider 基础契约及 analyzer/pipeline/storage 的纯辅助职责，降低热点文件冲突面且不改变分析与评分行为。
+- [修复] 报告页相关资讯按报告生成时间与配置的新闻窗口再次过滤，排除旧闻、未知日期及同批次其他股票资讯，并展示发布日期和来源；底层分析情报回看策略保持不变。
+- [改进] 首页移除重复的单股输入、分析与策略工具栏，改为轻量 StockMaster 品牌装饰横幅；自选股标题、数量和刷新入口回归列表栏独立分层，缓解窄窗口拥挤。
+- [改进] 自选股移除排序筛选下拉框，固定展示全部股票并默认按评分从高到低排列。
+- [改进] 自选股工作区改为紧凑行情行并适度加宽列表列，收敛添加与批量操作区域，移除冗余单页签和列表提示，在保留最近分析时间、价格、涨跌、评分、建议和趋势的同时让默认窗口展示更多股票。
+- [修复] 本地桌面启动在同步 Web UI 时一并覆盖 StockMaster 配置 API 适配层，修复前端已更新但算法运行目录仍返回新闻搜索测试接口 405 的问题，同时不覆盖分析算法与搜索 provider 实现。
+- [新功能] StockMaster 设置页新增新闻搜索 API 配置与连接测试，支持 Bocha、Tavily、Brave、SerpAPI 和自建 SearXNG，并保持原有搜索优先级与分析评分逻辑。
+- [改进] 公共 SearXNG 自动发现改为默认关闭，显式启用后连续失败会熔断 15 分钟，避免多维新闻检索重复等待；已同步关闭当前桌面运行配置中的公共实例开关。
+- [修复] AI 渠道编辑器在顶部固定展示保存操作与保存结果，并过滤与模型无关的可选数据源和通知提醒，避免新增 DeepSeek 官方渠道后找不到保存入口或误判保存失败。
+- [新功能] StockMaster 多股分析任务增加阶段、耗时、失败原因与异常退出恢复，重启后可继续未完成的自选股队列。
+- [新功能] 个股报告增加评分校准说明、数据完整度、来源与截止时间等可信标签，并支持与上一次报告对比评分、建议、趋势和关键点位。
+- [改进] 自选股增加按评分、涨跌幅、最近分析时间排序，以及持仓、未持仓、未分析筛选。
+- [改进] 桌面端连续分析多股时复用线程安全的数据抓取器缓存，减少重复行情、K 线、名称和基本面请求，不改变数据源优先级、分析策略或评分规则。
+- [改进] 移除 Windows 桌面窗口的 Electron 默认 File/Edit/View/Window/Help 菜单栏，保留 StockMaster 页面内功能导航。
+- [修复] 浅色模式导航栏改为与内容区一致的冷灰配色，并修复主题选择菜单白底白字、选中态对比不足的问题。
+- [修复] 本地 BAT 启动时将最新 StockMaster Web 界面同步到已激活的算法运行目录，仅覆盖静态 UI，不替换已同步的后端算法代码。
+- [改进] 按冷灰研报方向重做 StockMaster 桌面工作台，使用低饱和蓝承载交互，并统一 A 股红涨绿跌语义。
+- [修复] 自选股条目固定展示最近一次分析时间，并将名称、分析时间和行情评分分层排版以避免窄窗口挤压。
+- [修复] StockMaster 候选运行时改用显式目录遍历复制，规避 Electron 在 Windows 下过滤复制时遗漏 `src/` 等后端目录。
+- [修复] StockMaster 上游算法检查与逐文件下载增加 30 秒超时和有限重试，降低 GitHub 短时网络波动导致的同步失败。
+- [修复] StockMaster 算法同步以实际后端启动目录作为候选基线，并区分源入口缺失与候选目标复制失败，避免错误报告 `main.py` 缺失。
+- [修复] StockMaster 算法候选构建强制保留 `main.py` 与 `server.py` 后端入口，避免过滤复制后候选运行时缺失入口文件。
+- [修复] 桌面端启动加载页和初始窗口标题统一使用 StockMaster 品牌名称。
+- [修复] StockMaster 算法候选校验显式注入候选后端模块路径，避免桌面启动环境下误报 `No module named 'server'`。
+- [新功能] 在设置页接通后端算法同步按钮，支持候选下载、Python 校验、健康检查和失败回滚。
+- [修复] 重排自选股行内信息，让股票名称独占首行并完整显示常见 A 股名称。
+- [修复] 明确自选股名称单行展示，并在设置页区分算法更新已检查、待确认与当前运行基线。
+
+- [修复] 启动前预检 Python 核心依赖，缺失时自动安装 requirements，避免后端导入失败后只显示健康检查中止。
+- [改进] 单击自选股直接切换到报告页面，并将 AI 追问区移动到报告底部。
+
+- [改进] 按照参考浅色/深色界面重做 StockMaster 桌面端 Shell、品牌导航与首页仪表盘卡片，保留现有分析数据流与报告能力。
+- [fix] Made the entire watchlist row switch reports after the selected detail finishes loading, and populated the StockMaster detail drawer from structured dashboard data.
+- [fix] Disabled startup desktop release checks; full-stack GitHub upgrades now require an explicit Settings-page action while the upstream algorithm monitor remains enabled.
+- [修复] 自选股批量分析改为逐只串行提交，新增“停止分析”操作：完成当前股票后停止后续提交。
+- [fix] Fixed the narrow report pane layout by switching report cards to container-width responsive behavior and preventing horizontal overflow.
+- [改进] 收窄桌面端自选股工作区列宽，为右侧评分与 AI 洞察卡片释放更多空间。
+- [改进] 调整首页仪表盘纵横比：将评分、分析任务和自选股概况集中到右侧顶部，并放宽股票名称显示区域。
+- [改进] 精简首页信息密度：移除分析任务、自选股概况及今日覆盖/待分析入口，仅保留必要的自选股选择与分析操作。
+- [改进] 将市场情绪仪表移至首页右侧顶部，移除评分概览卡和报告内自选股增删卡片。
+- [修复] 使用报告容器断点修复默认窗口下的仪表盘、策略点位、输入数据块和运行诊断挤压问题。
+- [改进] 优化 StockMaster 自选股分析交互：支持单选、多选、全选分析，新增基于任务流进度的状态栏，并改善浅色主题与窄窗口响应式布局。
+- [perf] Added a read-only first-result benchmark harness with split-frame SSE parsing and median/p75 statistics.
+- [new] Added StockMaster holdings page with manual A-share positions and daily P/L metrics.
+- [new] Added a consent-based desktop monitor that checks the pinned upstream algorithm repository every minute with backoff and suppresses UI-only changes.
+- [new] Added `StockMaster-Start.bat` for local Windows trial runs without publishing an installer.
+- [new] Replaced the legacy settings route with a compact StockMaster settings page covering preferences, version info, and algorithm update checks.
+- [security] Added read-only staged-candidate validation for backend-only update paths, user-data isolation, and Python syntax checks.
+- [perf] Added short-TTL in-flight quote request deduplication with explicit invalidation for manual refresh.
+- [security] Added backend candidate staging and atomic runtime activation with health-failure rollback foundations.
+- [new] Added live algorithm-update state events from Electron to the StockMaster settings page.
+- [fix] Made the Windows starter detect a missing Electron binary and report a clear repair path instead of failing silently.
+- [style] Applied the StockMaster T1 shell to the default desktop view: fixed-width navy rail, warm workspace canvas, compact watchlist surface, and hidden non-core upstream controls.
+- [fix] Added the existing upstream LLM/API provider channel editor to the compact StockMaster settings page, preserving provider validation and secret masking.
+
+- [chore] StockMaster 固定上游分析基线并新增只读算法边界检查。
+- [新功能] StockMaster 首版桌面品牌、三页导航、自选股评分卡展示和结构化报告字段适配。
+
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [改进] AIHubMix 注册与引流链接统一使用 inferera.com，改善中国大陆网络直连体验。

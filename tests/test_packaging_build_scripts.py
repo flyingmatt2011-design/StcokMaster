@@ -5,11 +5,14 @@ import json
 import os
 import runpy
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+requires_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="Bash is unavailable")
 
 
 def _read_text(path: Path) -> str:
@@ -159,6 +162,7 @@ esac
     codesign_tool.chmod(0o755)
 
 
+@requires_bash
 def test_macos_signature_audit_normalizes_invalid_signatures(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     _write_fake_macos_signature_tools(fake_bin)
@@ -192,6 +196,7 @@ def test_macos_signature_audit_normalizes_invalid_signatures(tmp_path: Path) -> 
     assert "removed=1" in result.stdout
 
 
+@requires_bash
 def test_macos_signature_audit_rejects_invalid_signatures(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     _write_fake_macos_signature_tools(fake_bin)

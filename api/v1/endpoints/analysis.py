@@ -44,6 +44,7 @@ from api.v1.schemas.analysis import (
     DuplicateTaskErrorResponse,
     MarketReviewRequest,
     MarketReviewAccepted,
+    MarketDashboardSnapshotResponse,
 )
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.history import (
@@ -92,6 +93,7 @@ from src.utils.data_processing import (
     extract_board_detail_fields,
     extract_market_structure_detail_field,
     extract_realtime_detail_fields,
+    extract_stockmaster_display_fields,
 )
 from src.utils.market_review_region import normalize_market_review_region_lenient
 
@@ -110,6 +112,24 @@ def _get_task_trace_id(task: Any) -> Optional[str]:
     if isinstance(task_id, str) and task_id.strip():
         return task_id
     return None
+
+
+def _get_task_runtime_fields(task: Any) -> tuple[Optional[str], Optional[int], bool]:
+    """Read optional runtime fields without requiring the latest TaskInfo class."""
+    payload: Dict[str, Any] = {}
+    serializer = getattr(task, "to_dict", None)
+    if callable(serializer):
+        try:
+            serialized = serializer()
+            if isinstance(serialized, dict):
+                payload = serialized
+        except (AttributeError, TypeError, ValueError):
+            logger.debug("任务运行字段序列化失败，使用兼容字段读取", exc_info=True)
+
+    stage = payload.get("stage")
+    elapsed_seconds = getattr(task, "elapsed_seconds", payload.get("elapsed_seconds"))
+    recovered = bool(getattr(task, "recovered", payload.get("recovered", False)))
+    return stage, elapsed_seconds, recovered
 
 
 def _market_review_lock_path(config: Config) -> Path:
@@ -515,6 +535,39 @@ def _handle_sync_analysis(
 
 
 # ============================================================
+# GET /market-snapshot - 首页轻量行情刷新（不调用新闻或 LLM）
+# ============================================================
+
+@router.get(
+    "/market-snapshot",
+    response_model=MarketDashboardSnapshotResponse,
+    responses={
+        200: {"description": "首页大盘行情快照"},
+        503: {"description": "行情数据暂不可用", "model": ErrorResponse},
+    },
+    summary="刷新首页大盘行情",
+    description="只抓取指数、市场宽度和板块排行，不搜索新闻、不调用 LLM、不写入分析历史。",
+)
+def get_market_dashboard_snapshot(
+    region: str = Query("cn", pattern="^(cn|hk|us|jp|kr)$"),
+    config: Config = Depends(get_config_dep),
+) -> MarketDashboardSnapshotResponse:
+    from src.services.market_dashboard_service import MarketDashboardService
+
+    try:
+        result = MarketDashboardService(config).get_snapshot(region=region)
+        payload = result.get("payload")
+        if not isinstance(payload, dict) or not payload.get("indices"):
+            raise api_error(503, "market_snapshot_unavailable", "大盘行情暂不可用，请稍后重试")
+        return MarketDashboardSnapshotResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("首页大盘行情刷新失败: %s", exc, exc_info=True)
+        raise api_error(503, "market_snapshot_failed", f"首页大盘行情刷新失败: {exc}")
+
+
+# ============================================================
 # POST /market-review - 触发大盘复盘
 # ============================================================
 
@@ -627,28 +680,31 @@ def get_task_list(
     stats = task_queue.get_task_stats()
     
     # 转换为 Schema
-    task_infos = [
-        TaskInfo(
-            task_id=t.task_id,
-            trace_id=_get_task_trace_id(t),
-            stock_code=t.stock_code,
-            stock_name=t.stock_name,
-            status=t.status.value,
-            progress=t.progress,
-            message=t.message,
-            report_type=t.report_type,
-            created_at=t.created_at.isoformat(),
-            started_at=t.started_at.isoformat() if t.started_at else None,
-            completed_at=t.completed_at.isoformat() if t.completed_at else None,
-            error=t.error,
-            original_query=t.original_query,
-            selection_source=t.selection_source,
-            analysis_phase=t.analysis_phase,
-            skills=getattr(t, "skills", None),
-            region=t.region,
-        )
-        for t in all_tasks
-    ]
+    task_infos = []
+    for task in all_tasks:
+        stage, elapsed_seconds, recovered = _get_task_runtime_fields(task)
+        task_infos.append(TaskInfo(
+            task_id=task.task_id,
+            trace_id=_get_task_trace_id(task),
+            stock_code=task.stock_code,
+            stock_name=task.stock_name,
+            status=task.status.value,
+            progress=task.progress,
+            message=task.message,
+            report_type=task.report_type,
+            created_at=task.created_at.isoformat(),
+            started_at=task.started_at.isoformat() if task.started_at else None,
+            completed_at=task.completed_at.isoformat() if task.completed_at else None,
+            error=task.error,
+            original_query=task.original_query,
+            selection_source=task.selection_source,
+            analysis_phase=task.analysis_phase,
+            skills=getattr(task, "skills", None),
+            region=getattr(task, "region", None),
+            stage=stage,
+            elapsed_seconds=elapsed_seconds,
+            recovered=recovered,
+        ))
     
     return TaskListResponse(
         total=stats["total"],
@@ -1173,6 +1229,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 context_snapshot,
                 raw_result,
             )
+            stockmaster_display = extract_stockmaster_display_fields(raw_result)
             has_board_details = (
                 bool(extracted_boards.get("belong_boards"))
                 or extracted_boards.get("sector_rankings") is not None
@@ -1197,6 +1254,11 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     sector_rankings=extracted_boards.get("sector_rankings"),
                     concept_rankings=extracted_boards.get("concept_rankings"),
                     market_structure=market_structure,
+                    core_conclusion=stockmaster_display.get("core_conclusion"),
+                    risk_alerts=stockmaster_display.get("risk_alerts", []),
+                    positive_catalysts=stockmaster_display.get("positive_catalysts", []),
+                    support_level=stockmaster_display.get("support_level"),
+                    resistance_level=stockmaster_display.get("resistance_level"),
                 )
 
             raw_dict = raw_result if isinstance(raw_result, dict) else {}
@@ -1470,6 +1532,7 @@ def _build_analysis_report(
             break
     analysis_context_pack_overview = extract_analysis_context_pack_overview(context_snapshot)
     api_context_snapshot = sanitize_context_snapshot_for_api(context_snapshot)
+    stockmaster_display = extract_stockmaster_display_fields(raw_result_data)
     details = None
     has_board_details = (
         bool(extracted_boards.get("belong_boards"))
@@ -1495,6 +1558,11 @@ def _build_analysis_report(
             sector_rankings=extracted_boards.get("sector_rankings"),
             concept_rankings=extracted_boards.get("concept_rankings"),
             market_structure=market_structure,
+            core_conclusion=stockmaster_display.get("core_conclusion"),
+            risk_alerts=stockmaster_display.get("risk_alerts", []),
+            positive_catalysts=stockmaster_display.get("positive_catalysts", []),
+            support_level=stockmaster_display.get("support_level"),
+            resistance_level=stockmaster_display.get("resistance_level"),
         )
 
     return AnalysisReport(

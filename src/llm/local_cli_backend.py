@@ -626,6 +626,10 @@ def build_local_cli_env(source: Optional[Mapping[str, str]] = None) -> Dict[str,
         if not allowed or _is_sensitive_env_name(upper):
             continue
         child_env[key] = value
+    # Local CLI contracts are UTF-8. Python-based wrappers otherwise inherit
+    # the Windows ANSI code page and corrupt non-ASCII report text.
+    child_env.setdefault("PYTHONUTF8", "1")
+    child_env.setdefault("PYTHONIOENCODING", "utf-8")
     return child_env
 
 
@@ -1704,7 +1708,8 @@ def redact_diagnostic_text(text: str, *, home: Optional[str] = None, limit: int 
     for troubleshooting.
     """
 
-    redacted = _ANSI_ESCAPE_PATTERN.sub("", text or "")
+    redacted = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    redacted = _ANSI_ESCAPE_PATTERN.sub("", redacted)
     home_path = home or os.path.expanduser("~")
     if home_path:
         redacted = redacted.replace(home_path, "~")

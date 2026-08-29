@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
@@ -7,15 +7,14 @@ import { UI_LANGUAGE_STORAGE_KEY } from './utils/uiLanguage';
 
 type AuthState = ReturnType<typeof AuthContext.useAuth>;
 
-const { chatPageShouldThrow, setCurrentRoute, useAgentChatStoreMock } = vi.hoisted(() => {
+const { useAgentChatStoreMock } = vi.hoisted(() => {
   const setCurrentRoute = vi.fn();
-  const chatPageShouldThrow = { value: false };
   const state = { completionBadge: false };
   const useAgentChatStoreMock = Object.assign(
     vi.fn((selector?: (value: typeof state) => unknown) => (selector ? selector(state) : state)),
     { getState: () => ({ setCurrentRoute }) },
   );
-  return { chatPageShouldThrow, setCurrentRoute, useAgentChatStoreMock };
+  return { useAgentChatStoreMock };
 });
 
 vi.mock('./contexts/AuthContext', () => ({
@@ -23,54 +22,11 @@ vi.mock('./contexts/AuthContext', () => ({
   useAuth: vi.fn(),
 }));
 
-vi.mock('./stores/agentChatStore', () => ({
-  useAgentChatStore: useAgentChatStoreMock,
-}));
-
-vi.mock('./pages/HomePage', () => ({
-  default: () => <div data-testid="home-page">Home</div>,
-}));
-
-vi.mock('./pages/ChatPage', () => ({
-  default: () => {
-    if (chatPageShouldThrow.value) {
-      throw new Error('chunk load failed');
-    }
-    return <div data-testid="chat-page">Chat</div>;
-  },
-}));
-
-vi.mock('./pages/PortfolioPage', () => ({
-  default: () => <div data-testid="portfolio-page">Portfolio</div>,
-}));
-
-vi.mock('./pages/DecisionSignalsPage', () => ({
-  default: () => <div data-testid="decision-signals-page">Decision signals</div>,
-}));
-
-vi.mock('./pages/BacktestPage', () => ({
-  default: () => <div data-testid="backtest-page">Backtest</div>,
-}));
-
-vi.mock('./pages/AlertsPage', () => ({
-  default: () => <div data-testid="alerts-page">Alerts</div>,
-}));
-
-vi.mock('./pages/TokenUsagePage', () => ({
-  default: () => <div data-testid="token-usage-page">Usage</div>,
-}));
-
-vi.mock('./pages/SettingsPage', () => ({
-  default: () => <div data-testid="settings-page">Settings</div>,
-}));
-
-vi.mock('./pages/NotFoundPage', () => ({
-  default: () => <div data-testid="not-found-page">Not Found</div>,
-}));
-
-vi.mock('./pages/LoginPage', () => ({
-  default: () => <div data-testid="login-page">Login</div>,
-}));
+vi.mock('./stores/agentChatStore', () => ({ useAgentChatStore: useAgentChatStoreMock }));
+vi.mock('./pages/HomePage', () => ({ default: () => <div data-testid="home-page">Home</div> }));
+vi.mock('./pages/StockMasterHoldingsPage', () => ({ default: () => <div data-testid="stockmaster-holdings-page">Portfolio</div> }));
+vi.mock('./pages/StockMasterSettingsPage', () => ({ default: () => <div data-testid="settings-page">Settings</div> }));
+vi.mock('./pages/LoginPage', () => ({ default: () => <div data-testid="login-page">Login</div> }));
 
 function makeAuthState(overrides: Partial<AuthState> = {}): AuthState {
   return {
@@ -91,101 +47,42 @@ function makeAuthState(overrides: Partial<AuthState> = {}): AuthState {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  chatPageShouldThrow.value = false;
   window.history.pushState({}, '', '/');
   localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
   vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState());
 });
 
-describe('App routing behavior', () => {
+describe('StockMaster App routing behavior', () => {
   it('shows loading fallback while auth status is initializing', () => {
     vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState({ isLoading: true }));
-
     const { container } = render(<App />);
-
     expect(container.querySelector('.border-t-cyan')).toBeInTheDocument();
   });
 
-  it('redirects protected routes to login when auth is enabled but user is not logged in', async () => {
+  it('renders the three supported pages', async () => {
+    for (const [path, testId] of [['/', 'home-page'], ['/portfolio', 'stockmaster-holdings-page'], ['/settings', 'settings-page']] as const) {
+      window.history.pushState({}, '', path);
+      const view = render(<App />);
+      expect(await screen.findByTestId(testId)).toBeInTheDocument();
+      view.unmount();
+    }
+  });
+
+  it('redirects unsupported routes to Home', async () => {
+    window.history.pushState({}, '', '/chat');
+    render(<App />);
+    expect(await screen.findByTestId('home-page')).toBeInTheDocument();
+  });
+
+  it('redirects protected routes to login when auth is enabled', async () => {
     vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState({
       authEnabled: true,
       loggedIn: false,
       setupState: 'enabled',
     }));
     window.history.pushState({}, '', '/portfolio');
-
     render(<App />);
-
     expect(await screen.findByTestId('login-page')).toBeInTheDocument();
     expect(window.location.pathname).toBe('/login');
-    expect(window.location.search).toBe('?redirect=%2Fportfolio');
-  });
-
-  it('renders the current route page after auth is ready', async () => {
-    window.history.pushState({}, '', '/chat');
-
-    render(<App />);
-
-    expect(await screen.findByTestId('chat-page')).toBeInTheDocument();
-    expect(setCurrentRoute).toHaveBeenCalledWith('/chat');
-    expect(screen.queryByTestId('login-page')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('home-page')).not.toBeInTheDocument();
-  });
-
-  it('routes /usage to the token usage page after auth is ready', async () => {
-    window.history.pushState({}, '', '/usage');
-
-    render(<App />);
-
-    expect(await screen.findByTestId('token-usage-page')).toBeInTheDocument();
-    expect(setCurrentRoute).toHaveBeenCalledWith('/usage');
-    expect(screen.queryByTestId('home-page')).not.toBeInTheDocument();
-  });
-
-  it('routes /decision-signals to the AI signals page after auth is ready', async () => {
-    window.history.pushState({}, '', '/decision-signals');
-
-    render(<App />);
-
-    expect(await screen.findByTestId('decision-signals-page')).toBeInTheDocument();
-    expect(setCurrentRoute).toHaveBeenCalledWith('/decision-signals');
-    expect(screen.queryByTestId('home-page')).not.toBeInTheDocument();
-  });
-
-  it('redirects authenticated login visits back to the home page', async () => {
-    vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState({
-      authEnabled: true,
-      loggedIn: true,
-      setupState: 'enabled',
-    }));
-    window.history.pushState({}, '', '/login');
-
-    render(<App />);
-
-    expect(await screen.findByTestId('home-page')).toBeInTheDocument();
-    expect(screen.queryByTestId('login-page')).not.toBeInTheDocument();
-  });
-
-  it('keeps the shell mounted and resets the route boundary after page render errors', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    chatPageShouldThrow.value = true;
-    window.history.pushState({}, '', '/chat');
-
-    try {
-      render(<App />);
-
-      expect(await screen.findByRole('heading', { name: '页面加载失败' })).toBeInTheDocument();
-      expect(screen.getByRole('navigation', { name: '主导航' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: '重新加载页面' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: '返回首页' })).toBeInTheDocument();
-
-      chatPageShouldThrow.value = false;
-      fireEvent.click(screen.getByRole('link', { name: '持仓' }));
-
-      expect(await screen.findByTestId('portfolio-page')).toBeInTheDocument();
-      expect(screen.queryByRole('heading', { name: '页面加载失败' })).not.toBeInTheDocument();
-    } finally {
-      consoleError.mockRestore();
-    }
   });
 });

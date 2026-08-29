@@ -1,40 +1,29 @@
 import type React from 'react';
 import { useMemo, useState } from 'react';
-import {
-  ArrowDownWideNarrow,
-  CalendarDays,
-  CheckCircle2,
-  CircleAlert,
-  Clock3,
-  Loader2,
-  Play,
-  Plus,
-  RefreshCw,
-  Star,
-  Trash2,
-} from 'lucide-react';
-import { Badge, Button, InlineAlert, Input, ScrollArea, StatusDot } from '../common';
-import { DashboardPanelHeader, DashboardStateBlock } from '../dashboard';
+import { Play, Plus, RefreshCw, StopCircle, Trash2 } from 'lucide-react';
+import { Button, InlineAlert, Input } from '../common';
+import { DashboardStateBlock } from '../dashboard';
 import { StockBar } from '../history';
 import type { StockBarItem, TaskInfo } from '../../types/analysis';
-import { getSentimentColor } from '../../types/analysis';
-import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../../utils/decisionAction';
+import { contextualAdvice } from '../../utils/contextualAdvice';
 import { formatDateTime } from '../../utils/format';
 import { areStockCodesEquivalent } from '../../utils/stockCode';
-import { truncateStockName } from '../../utils/stockName';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
-import type { UiTextKey, UiTextParams } from '../../i18n/uiText';
+import type { StockQuote } from '../../api/stocks';
+import type { AShareQuoteRefreshState } from '../../hooks/useAshareQuoteRefresh';
 
 export type HomeWorkspaceTab = 'watchlist' | 'today' | 'history';
-export type WatchlistAnalyzeMode = 'all' | 'pending';
+export type WatchlistAnalyzeMode = 'all' | 'pending' | 'selected';
 
 export interface HomeWatchlistRow {
   code: string;
   latestItem?: StockBarItem;
+  quote?: StockQuote;
   analyzedToday: boolean;
   isTodayStatusLoading?: boolean;
   isTodayStatusUnknown?: boolean;
   activeTask?: TaskInfo;
+  isHeld?: boolean;
 }
 
 interface BatchStatus {
@@ -44,7 +33,7 @@ interface BatchStatus {
 
 interface HomeStockWorkspaceProps {
   activeTab: HomeWorkspaceTab;
-  onTabChange: (tab: HomeWorkspaceTab) => void;
+  onActiveTabChange?: (tab: HomeWorkspaceTab) => void;
   watchlistRows: HomeWatchlistRow[];
   watchlistLoading: boolean;
   watchlistActioning: boolean;
@@ -52,13 +41,15 @@ interface HomeStockWorkspaceProps {
   onAddToWatchlist: (code: string) => Promise<void>;
   onRemoveFromWatchlist: (code: string) => Promise<void>;
   onRefreshWatchlist: () => Promise<void>;
-  onAnalyzeWatchlist: (mode: WatchlistAnalyzeMode) => Promise<void>;
+  onAnalyzeWatchlist: (mode: WatchlistAnalyzeMode, selectedCodes?: string[]) => Promise<void>;
+  onStopAnalyzeWatchlist: () => void;
   isBatchAnalyzing: boolean;
+  isBatchStopRequested: boolean;
   batchStatus: BatchStatus | null;
+  quoteRefreshState?: AShareQuoteRefreshState;
   todayItems: StockBarItem[];
   isLoadingTodayItems: boolean;
   todayLoadError: boolean;
-  watchlistAnalyzedTodayCount: number;
   historyItems: StockBarItem[];
   isLoadingHistory: boolean;
   selectedStockCode?: string;
@@ -69,178 +60,126 @@ interface HomeStockWorkspaceProps {
   className?: string;
 }
 
-function getTaskStatusLabel(task: TaskInfo | undefined, t: (key: UiTextKey, params?: UiTextParams) => string) {
-  if (!task) return '';
-  if (task.status === 'processing') return t('taskPanel.processing');
-  if (task.status === 'pending') return t('taskPanel.pending');
-  if (task.status === 'cancel_requested') return t('taskPanel.cancelRequested');
-  return task.status;
+type WatchlistFilter = 'all' | 'action' | 'held' | 'observe';
+type WatchlistSort = 'score' | 'change' | 'recent';
+
+const ACTION_SIGNAL_SET = new Set(['buy', 'add', 'reduce', 'sell']);
+
+function timeValue(value?: string): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-const ScoreBadge: React.FC<{ item?: StockBarItem }> = ({ item }) => {
-  const { t } = useUiLanguage();
-  const score = typeof item?.sentimentScore === 'number' ? item.sentimentScore : null;
-  const color = score !== null ? getSentimentColor(score) : null;
-  if (score === null || !color) {
-    return <span className="text-[11px] text-muted-text">{t('common.noData')}</span>;
-  }
-
-  const actionLabels = buildDecisionActionLabelMap(t);
-  const operationLabel = getDecisionActionLabel(
-    item?.action,
-    item?.actionLabel,
-    item?.operationAdvice,
-    t('history.sentiment'),
-    actionLabels,
+function getVerdict(row: HomeWatchlistRow): string {
+  return contextualAdvice(
+    row.latestItem?.action,
+    row.latestItem?.operationAdvice,
+    row.isHeld ? 'held' : 'unheld',
   );
+}
 
-  return (
-    <Badge
-      variant="default"
-      size="sm"
-      className="shrink-0 shadow-none text-[11px] font-semibold leading-none"
-      style={{
-        color,
-        borderColor: `${color}30`,
-        backgroundColor: `${color}10`,
-      }}
-    >
-      {operationLabel} {score}
-    </Badge>
-  );
-};
+function getVerdictTone(row: HomeWatchlistRow): 'buy' | 'sell' | 'hold' {
+  const action = row.latestItem?.action;
+  if (action === 'buy' || action === 'add') return 'buy';
+  if (action === 'reduce' || action === 'sell') return 'sell';
+  return 'hold';
+}
 
-const WatchlistRowItem: React.FC<{
-  row: HomeWatchlistRow;
-  onRemove: (code: string) => Promise<void>;
-  onOpenDetail: (row: HomeWatchlistRow) => void;
-  disabled: boolean;
-  selected: boolean;
-}> = ({ row, onRemove, onOpenDetail, disabled, selected }) => {
-  const { t } = useUiLanguage();
-  const taskLabel = getTaskStatusLabel(row.activeTask, t);
-  const isLatestDetailLoading = Boolean(row.isTodayStatusLoading);
-  const isLatestDetailUnavailable = !isLatestDetailLoading && Boolean(row.isTodayStatusUnknown);
-  const item = isLatestDetailLoading || isLatestDetailUnavailable ? undefined : row.latestItem;
-  const stockName = row.latestItem?.stockName || row.code;
-  const canOpenDetail = typeof item?.id === 'number';
+function rowChangePct(row: HomeWatchlistRow): number | undefined {
+  return row.quote?.changePercent ?? row.latestItem?.changePct;
+}
 
-  const handleOpenDetail = () => {
-    onOpenDetail(row);
+function formatPrice(value?: number): string {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(2) : '--';
+}
+
+function formatChange(value?: number): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '--';
+  return `${value > 0 ? '+' : ''}${value.toFixed(2)}%`;
+}
+
+function formatStrategyPoint(value?: string): string {
+  if (!value) return '--';
+  const matched = value.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
+  if (!matched) return '--';
+  const parsed = Number(matched[0]);
+  return Number.isFinite(parsed) ? parsed.toFixed(2) : '--';
+}
+
+function changeTone(value?: number): string {
+  if (typeof value !== 'number' || value === 0) return 'term-flat';
+  return value > 0 ? 'term-up' : 'term-down';
+}
+
+function compactTime(value?: string): string {
+  if (!value) return '--';
+  return formatDateTime(value).replace(/^\d{4}\//, '');
+}
+
+type Translator = ReturnType<typeof useUiLanguage>['t'];
+
+function quoteSourceLabel(source?: string | null): string {
+  const labels: Record<string, string> = {
+    efinance: '东财',
+    akshare_em: '东财',
+    akshare_sina: '新浪',
+    akshare_qq: '腾讯',
+    tencent: '腾讯',
+    sina: '新浪',
+    tushare: 'Tushare',
+    tickflow: 'TickFlow',
+    stooq: 'Stooq',
+    longbridge: 'Longbridge',
+    fallback: 'Fallback',
   };
+  return source ? labels[source] || source : '--';
+}
 
-  return (
-    <div
-      className={`home-subpanel group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2 px-3 py-2.5 text-left transition-colors ${
-        selected
-          ? 'border-primary/35 bg-primary/10'
-          : 'hover:border-subtle-hover hover:bg-base/65'
-      }`}
-      data-testid={`watchlist-row-${row.code}`}
-    >
-      <button
-        type="button"
-        aria-pressed={selected}
-        aria-label={canOpenDetail
-          ? t('watchlist.openLatestDetailAria', { code: row.code })
-          : isLatestDetailLoading
-            ? t('watchlist.latestDetailLoadingAria', { code: row.code })
-            : isLatestDetailUnavailable
-              ? t('watchlist.latestDetailUnavailableAria', { code: row.code })
-            : t('watchlist.noLatestDetailAria', { code: row.code })}
-        className="grid min-w-0 cursor-pointer gap-2 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan/30"
-        onClick={handleOpenDetail}
-      >
-        <div className="min-w-0">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="truncate text-sm font-semibold text-foreground">
-              {truncateStockName(stockName)}
-            </span>
-            {row.isTodayStatusLoading ? (
-              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-text" aria-label={t('watchlist.todayStatusLoading')} />
-            ) : row.isTodayStatusUnknown ? (
-              <CircleAlert className="h-3.5 w-3.5 shrink-0 text-warning" aria-label={t('watchlist.todayStatusUnavailable')} />
-            ) : row.analyzedToday ? (
-              <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" aria-label={t('watchlist.analyzedToday')} />
-            ) : (
-              <Clock3 className="h-3.5 w-3.5 shrink-0 text-muted-text" aria-label={t('watchlist.notAnalyzedToday')} />
-            )}
-          </div>
-          <div className="mt-1 flex flex-wrap items-center gap-2">
-            <span className="font-mono text-[11px] text-secondary-text">{row.code}</span>
-            {item?.lastAnalysisTime ? (
-              <>
-                <span className="h-1 w-1 rounded-full bg-subtle-hover" />
-                <span className="text-[11px] text-muted-text">{formatDateTime(item.lastAnalysisTime)}</span>
-              </>
-            ) : null}
-          </div>
-          <div className="flex min-w-0 items-center justify-between gap-2 text-[11px]">
-            <span className={`truncate ${canOpenDetail ? 'text-primary' : isLatestDetailLoading ? 'text-muted-text' : 'text-warning'}`}>
-              {canOpenDetail
-                ? t('common.details')
-                : isLatestDetailLoading
-                  ? t('watchlist.latestDetailLoadingCta')
-                  : isLatestDetailUnavailable
-                    ? t('watchlist.latestDetailUnavailableCta')
-                    : t('watchlist.noLatestDetailCta')}
-            </span>
-          </div>
-          {row.activeTask ? (
-            <div className="flex min-w-0 items-center gap-2 text-[11px] text-muted-text">
-              <StatusDot
-                tone={row.activeTask.status === 'processing' ? 'info' : 'neutral'}
-                pulse={row.activeTask.status === 'processing'}
-                className="h-1.5 w-1.5"
-              />
-              <span className="truncate">{t('watchlist.taskRunning', { status: taskLabel })}</span>
-            </div>
-          ) : null}
-        </div>
-      </button>
-      <div className="flex shrink-0 items-start gap-1.5">
-        <ScoreBadge item={item} />
-        <Button
-          type="button"
-          variant="ghost"
-          size="xsm"
-          className="h-7 w-7 px-0"
-          disabled={disabled}
-          aria-label={t('watchlist.removeAria', { code: row.code })}
-          onClick={() => void onRemove(row.code)}
-        >
-          <Trash2 className="h-3.5 w-3.5 text-danger" aria-hidden="true" />
-        </Button>
-      </div>
-    </div>
-  );
-};
+function quoteAgeLabel(quote: StockQuote, t: Translator): string {
+  const timestamp = quote.lastSuccessAt || quote.fetchedAt || quote.updateTime;
+  const parsed = timestamp ? Date.parse(timestamp) : Number.NaN;
+  if (!Number.isFinite(parsed)) return '--';
+  const seconds = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
+  if (seconds < 2) return t('terminal.quoteAgeNow');
+  if (seconds < 60) return t('terminal.quoteAgeSeconds', { seconds });
+  return t('terminal.quoteAgeMinutes', { minutes: Math.floor(seconds / 60) });
+}
 
-const TodayItem: React.FC<{ item: StockBarItem; onClick: (recordId: number) => void }> = ({ item, onClick }) => {
-  const stockName = item.stockName || item.stockCode;
+function quoteRefreshLabel(
+  state: AShareQuoteRefreshState | undefined,
+  isBatchAnalyzing: boolean,
+  language: 'zh' | 'en',
+  t: Translator,
+): string {
+  if (state?.policyUnavailable) return t('terminal.quoteRefreshUnavailable');
+  if (!state?.policy) return t('terminal.quoteRefreshPending');
+  if (state.policy.isMarketOpenNow) {
+    const seconds = Math.round((state.cadenceMs || 5_000) / 1_000);
+    return isBatchAnalyzing
+      ? t('terminal.quoteRefreshBatch', { seconds })
+      : t('terminal.quoteRefreshLive', { seconds });
+  }
+  if (state.policy.phase === 'lunch_break' && state.policy.nextTransitionAt) {
+    const time = new Intl.DateTimeFormat(language === 'zh' ? 'zh-CN' : 'en', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(new Date(state.policy.nextTransitionAt));
+    return t('terminal.quoteRefreshLunch', { time });
+  }
+  return t('terminal.quoteRefreshPaused');
+}
 
-  return (
-    <button
-      type="button"
-      className="home-subpanel grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-3 py-2.5 text-left"
-      onClick={() => onClick(item.id)}
-    >
-      <div className="min-w-0">
-        <span className="block truncate text-sm font-semibold text-foreground">
-          {truncateStockName(stockName)}
-        </span>
-        <span className="mt-1 block truncate font-mono text-[11px] text-secondary-text">
-          {item.stockCode}
-        </span>
-      </div>
-      <ScoreBadge item={item} />
-    </button>
-  );
-};
+const TerminalStatus: React.FC<{ task: TaskInfo }> = ({ task }) => (
+  <span className={`terminal-task-state ${task.status === 'processing' ? 'is-running' : ''}`}>
+    {task.status === 'processing' ? 'RUN' : 'QUEUE'} {Math.max(0, Math.min(100, task.progress || 0))}%
+  </span>
+);
 
 export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   activeTab,
-  onTabChange,
+  onActiveTabChange,
   watchlistRows,
   watchlistLoading,
   watchlistActioning,
@@ -249,12 +188,14 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   onRemoveFromWatchlist,
   onRefreshWatchlist,
   onAnalyzeWatchlist,
+  onStopAnalyzeWatchlist,
   isBatchAnalyzing,
+  isBatchStopRequested,
   batchStatus,
+  quoteRefreshState,
   todayItems,
   isLoadingTodayItems,
   todayLoadError,
-  watchlistAnalyzedTodayCount,
   historyItems,
   isLoadingHistory,
   selectedStockCode,
@@ -264,94 +205,100 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   isDeleting = false,
   className = '',
 }) => {
-  const { t } = useUiLanguage();
+  const { language, t } = useUiLanguage();
   const [draftCode, setDraftCode] = useState('');
+  const [selectedCodes, setSelectedCodes] = useState<string[]>([]);
+  const [filter, setFilter] = useState<WatchlistFilter>('all');
+  const [sort, setSort] = useState<WatchlistSort>('score');
   const [workspaceNoticeCode, setWorkspaceNoticeCode] = useState<string | null>(null);
-  const pendingWatchlistCount = watchlistRows
-    .filter((row) => !row.analyzedToday && !row.isTodayStatusLoading && !row.isTodayStatusUnknown)
-    .length;
-  const isTodayStatusUnavailable = watchlistRows.some((row) => row.isTodayStatusLoading || row.isTodayStatusUnknown);
-  const topTodayItem = todayItems[0];
-  const tabs: Array<{ key: HomeWorkspaceTab; label: string }> = [
-    { key: 'history', label: t('watchlist.tabHistory') },
-    { key: 'watchlist', label: t('watchlist.tabWatchlist') },
-    { key: 'today', label: t('watchlist.tabToday') },
-  ];
 
-  const statusClassName = useMemo(() => {
-    if (!batchStatus) return '';
-    if (batchStatus.variant === 'danger') return 'border-danger/30 bg-danger/10 text-danger';
-    if (batchStatus.variant === 'warning') return 'border-warning/30 bg-warning/10 text-warning';
-    return 'border-success/30 bg-success/10 text-success';
-  }, [batchStatus]);
+  const selectedRowCodes = useMemo(
+    () => watchlistRows
+      .filter((row) => selectedCodes.some((code) => areStockCodesEquivalent(row.code, code)))
+      .map((row) => row.code),
+    [selectedCodes, watchlistRows],
+  );
+
+  const visibleRows = useMemo(() => {
+    const filtered = watchlistRows.filter((row) => {
+      if (filter === 'held') return Boolean(row.isHeld);
+      if (filter === 'action') return ACTION_SIGNAL_SET.has(row.latestItem?.action || '');
+      if (filter === 'observe') return !ACTION_SIGNAL_SET.has(row.latestItem?.action || '');
+      return true;
+    });
+    return [...filtered].sort((left, right) => {
+      if (sort === 'change') return (rowChangePct(right) ?? -Infinity) - (rowChangePct(left) ?? -Infinity);
+      if (sort === 'recent') return timeValue(right.latestItem?.lastAnalysisTime) - timeValue(left.latestItem?.lastAnalysisTime);
+      return (right.latestItem?.sentimentScore ?? -Infinity) - (left.latestItem?.sentimentScore ?? -Infinity);
+    });
+  }, [filter, sort, watchlistRows]);
+
+  const allVisibleSelected = visibleRows.length > 0 && visibleRows.every(
+    (row) => selectedRowCodes.some((code) => areStockCodesEquivalent(row.code, code)),
+  );
 
   const visibleWorkspaceNotice = useMemo(() => {
     if (!workspaceNoticeCode) return null;
     const row = watchlistRows.find((item) => areStockCodesEquivalent(item.code, workspaceNoticeCode));
     if (!row) return null;
-    if (row.isTodayStatusLoading) {
-      return { message: t('watchlist.latestDetailLoading') };
-    }
-    if (row.isTodayStatusUnknown) {
-      return { message: t('watchlist.latestDetailUnavailable') };
-    }
-    if (row.latestItem) return null;
-    return { message: t('watchlist.noLatestDetail') };
+    if (row.isTodayStatusLoading) return t('watchlist.latestDetailLoading');
+    if (row.isTodayStatusUnknown) return t('watchlist.latestDetailUnavailable');
+    if (!row.latestItem) return t('watchlist.noLatestDetail');
+    return null;
   }, [t, watchlistRows, workspaceNoticeCode]);
 
-  const handleAddSubmit = (event: React.FormEvent) => {
-    event.preventDefault();
-    const code = draftCode.trim();
-    if (!code) return;
-    setWorkspaceNoticeCode(null);
-    void onAddToWatchlist(code).then(() => setDraftCode(''));
+  const handleToggleSelection = (code: string) => {
+    setSelectedCodes((current) => current.some((item) => areStockCodesEquivalent(item, code))
+      ? current.filter((item) => !areStockCodesEquivalent(item, code))
+      : [...current, code]);
   };
 
-  const handleWatchlistRowOpen = (row: HomeWatchlistRow) => {
-    if (row.isTodayStatusLoading || row.isTodayStatusUnknown) {
+  const handleToggleAll = () => {
+    if (allVisibleSelected) {
+      setSelectedCodes((current) => current.filter(
+        (code) => !visibleRows.some((row) => areStockCodesEquivalent(row.code, code)),
+      ));
+      return;
+    }
+    setSelectedCodes((current) => Array.from(new Set([...current, ...visibleRows.map((row) => row.code)])));
+  };
+
+  const handleOpenRow = (row: HomeWatchlistRow) => {
+    if (row.isTodayStatusLoading || row.isTodayStatusUnknown || typeof row.latestItem?.id !== 'number') {
       setWorkspaceNoticeCode(row.code);
       return;
     }
-    const recordId = row.latestItem?.id;
-    if (typeof recordId === 'number') {
-      setWorkspaceNoticeCode(null);
-      onHistoryItemClick(recordId);
-      return;
-    }
-    setWorkspaceNoticeCode(row.code);
+    setWorkspaceNoticeCode(null);
+    onHistoryItemClick(row.latestItem.id);
   };
 
-  const renderTabs = (
-    <div className="grid grid-cols-3 gap-1 rounded-xl border border-subtle bg-base/40 p-1">
-      {tabs.map((tab) => {
-        const selected = activeTab === tab.key;
-        return (
-          <button
-            key={tab.key}
-            type="button"
-            aria-pressed={selected}
-            className={`h-8 rounded-lg px-2 text-xs font-medium transition-colors ${
-              selected ? 'bg-primary/15 text-primary shadow-inner' : 'text-secondary-text hover:bg-hover hover:text-foreground'
-            }`}
-            onClick={() => {
-              setWorkspaceNoticeCode(null);
-              onTabChange(tab.key);
-            }}
-          >
-            {tab.label}
-          </button>
-        );
-      })}
-    </div>
+  const handleAdd = (event: React.FormEvent) => {
+    event.preventDefault();
+    const code = draftCode.trim();
+    if (!code) return;
+    void onAddToWatchlist(code).then(() => setDraftCode(''));
+  };
+
+  const workspaceTabs = (
+    <nav className="terminal-workspace-tabs" aria-label={t('watchlist.workspaceTitle')}>
+      {(['watchlist', 'today', 'history'] as const).map((tab) => (
+        <button
+          key={tab}
+          type="button"
+          className={activeTab === tab ? 'is-active' : ''}
+          aria-pressed={activeTab === tab}
+          onClick={() => onActiveTabChange?.(tab)}
+        >
+          {t(`watchlist.tab${tab === 'watchlist' ? 'Watchlist' : tab === 'today' ? 'Today' : 'History'}`)}
+        </button>
+      ))}
+    </nav>
   );
 
   if (activeTab === 'history') {
     return (
-      <div
-        data-testid="home-stock-workspace"
-        className={`home-stock-scroll-shell flex min-h-0 flex-1 flex-col gap-2 ${className}`}
-      >
-        {renderTabs}
+      <div data-testid="home-stock-workspace" className={`terminal-watchlist-history min-h-0 ${className}`}>
+        {workspaceTabs}
         <StockBar
           items={historyItems}
           isLoading={isLoadingHistory}
@@ -360,212 +307,235 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
           onItemClick={onHistoryItemClick}
           onDeleteStock={onDeleteStock}
           isDeleting={isDeleting}
-          className="flex-1"
+          className="h-full"
         />
       </div>
     );
   }
 
-  return (
-    <aside
-      data-testid="home-stock-workspace"
-      className={`glass-card home-stock-scroll-shell flex min-h-0 flex-1 flex-col ${className}`}
-    >
-      <div className="space-y-2.5 border-b border-subtle px-3 py-3 sm:px-4">
-        {renderTabs}
+  if (activeTab === 'today') {
+    return (
+      <section data-testid="home-stock-workspace" className={`terminal-watchlist-board min-h-0 ${className}`}>
+        {workspaceTabs}
+        <header className="terminal-block-head">
+          <h2>{t('watchlist.todayTitle')}</h2>
+          <span className="terminal-meta">{t('common.itemsCount', { count: todayItems.length })}</span>
+        </header>
+        <div className="terminal-simple-list">
+          {isLoadingTodayItems ? <DashboardStateBlock loading compact title={t('watchlist.loading')} /> : null}
+          {todayLoadError ? <DashboardStateBlock compact title={t('watchlist.todayLoadErrorTitle')} /> : null}
+          {!isLoadingTodayItems && !todayLoadError && todayItems.map((item) => (
+            <button key={item.id} type="button" onClick={() => onHistoryItemClick(item.id)}>
+              <strong>{item.stockName || item.stockCode}</strong>
+              <span className="terminal-mono">{item.stockCode}</span>
+              <span className="terminal-mono">{item.sentimentScore ?? '--'}</span>
+            </button>
+          ))}
+        </div>
+      </section>
+    );
+  }
 
-        {activeTab === 'watchlist' ? (
-          <>
-            <DashboardPanelHeader
-              className="mb-0"
-              title={t('watchlist.title')}
-              titleClassName="text-sm font-medium"
-              leading={<Star className="h-4 w-4 text-primary" aria-hidden="true" />}
-              actions={(
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[11px] text-muted-text">{t('common.itemsCount', { count: watchlistRows.length })}</span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="xsm"
-                    className="h-7 w-7 px-0"
-                    disabled={watchlistLoading}
-                    onClick={() => {
-                      setWorkspaceNoticeCode(null);
-                      void onRefreshWatchlist();
-                    }}
-                    aria-label={t('watchlist.refreshAria')}
-                  >
-                    <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-                  </Button>
-                </div>
-              )}
-            />
-            <div className="flex flex-wrap gap-1.5">
-              <Badge variant="default" className="gap-1 shadow-none text-[11px]">
-                {t('watchlist.todayCoverage')} {watchlistAnalyzedTodayCount}/{watchlistRows.length}
-              </Badge>
-              <Badge variant="default" className="gap-1 shadow-none text-[11px]">
-                {t('watchlist.pendingToday')} {pendingWatchlistCount}
-              </Badge>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="home-action-ai"
-                className="h-8 flex-1 whitespace-nowrap px-2 text-xs sm:flex-none"
-                disabled={watchlistRows.length === 0 || isBatchAnalyzing}
-                isLoading={isBatchAnalyzing}
-                loadingText={t('watchlist.submitting')}
-                onClick={() => void onAnalyzeWatchlist('all')}
-              >
-                <Play className="h-4 w-4" aria-hidden="true" />
-                {t('watchlist.analyzeAll')}
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="home-action-report"
-                className="h-8 flex-1 whitespace-nowrap px-2 text-xs sm:flex-none"
-                disabled={pendingWatchlistCount === 0 || isTodayStatusUnavailable || isBatchAnalyzing}
-                onClick={() => void onAnalyzeWatchlist('pending')}
-              >
-                <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-                {t('watchlist.analyzePending')}
-              </Button>
-            </div>
-            <form className="grid grid-cols-[minmax(0,1fr)_auto] gap-2" onSubmit={handleAddSubmit}>
-              <Input
-                value={draftCode}
-                onChange={(event) => setDraftCode(event.target.value)}
-                placeholder={t('watchlist.addPlaceholder')}
-                className="h-8 rounded-lg px-3 text-xs"
-                disabled={watchlistActioning}
-                aria-label={t('watchlist.addPlaceholder')}
-              />
-              <Button
-                type="submit"
-                size="sm"
-                variant="secondary"
-                className="h-8 w-8 px-0"
-                disabled={!draftCode.trim() || watchlistActioning}
-                isLoading={watchlistActioning}
-                aria-label={t('watchlist.add')}
-              >
-                <Plus className="h-4 w-4" aria-hidden="true" />
-              </Button>
-            </form>
-            {batchStatus ? (
-              <div className={`rounded-xl border px-3 py-2 text-xs ${statusClassName}`}>
-                {batchStatus.message}
-              </div>
-            ) : null}
-            {watchlistMessage ? (
-              <div className="rounded-xl border border-subtle bg-base/35 px-3 py-2 text-xs text-secondary-text">
-                {watchlistMessage}
-              </div>
-            ) : null}
-            {visibleWorkspaceNotice ? (
-              <InlineAlert
-                variant="warning"
-                message={visibleWorkspaceNotice.message}
-                className="rounded-xl px-3 py-2 text-xs shadow-none"
-              />
-            ) : null}
-          </>
-        ) : (
-          <>
-            <DashboardPanelHeader
-              className="mb-0"
-              title={t('watchlist.todayTitle')}
-              titleClassName="text-sm font-medium"
-              leading={<CalendarDays className="h-4 w-4 text-cyan" aria-hidden="true" />}
-              actions={<span className="text-[11px] text-muted-text">{t('common.itemsCount', { count: todayItems.length })}</span>}
-            />
-            <div className="flex flex-wrap gap-1.5">
-              <Badge variant="default" className="gap-1 shadow-none text-[11px]">
-                {t('watchlist.watchlistCoverage')} {watchlistAnalyzedTodayCount}/{watchlistRows.length}
-              </Badge>
-              <Badge variant="default" className="gap-1 shadow-none text-[11px]">
-                {t('watchlist.topScore')} {topTodayItem?.sentimentScore ?? '-'}
-              </Badge>
-            </div>
-          </>
-        )}
+  const filters: Array<{ key: WatchlistFilter; label: string; count: number }> = [
+    { key: 'all', label: t('watchlist.filterAll'), count: watchlistRows.length },
+    { key: 'action', label: t('terminal.actionSignals'), count: watchlistRows.filter((row) => ACTION_SIGNAL_SET.has(row.latestItem?.action || '')).length },
+    { key: 'held', label: t('watchlist.filterHeld'), count: watchlistRows.filter((row) => row.isHeld).length },
+    { key: 'observe', label: t('terminal.observe'), count: watchlistRows.filter((row) => !ACTION_SIGNAL_SET.has(row.latestItem?.action || '')).length },
+  ];
+
+  return (
+    <section data-testid="home-stock-workspace" data-density="terminal" className={`terminal-watchlist-board flex min-h-0 flex-col ${className}`}>
+      {workspaceTabs}
+      <header className="terminal-block-head terminal-watchlist-head">
+        <div>
+          <h2>{t('terminal.watchlistBoard')}</h2>
+          <div className="terminal-watchlist-meta-line">
+            <span className="terminal-meta">{t('terminal.sortedByScore', { count: watchlistRows.length })}</span>
+            <span
+              className={`terminal-quote-refresh ${quoteRefreshState?.policyUnavailable ? 'is-warning' : quoteRefreshState?.policy?.isMarketOpenNow ? 'is-live' : 'is-paused'}`}
+              data-testid="watchlist-quote-refresh-status"
+            >
+              {quoteRefreshLabel(quoteRefreshState, isBatchAnalyzing, language, t)}
+            </span>
+          </div>
+        </div>
+        <div className="terminal-head-actions">
+          <form onSubmit={handleAdd} className="terminal-inline-add">
+            <Input value={draftCode} onChange={(event) => setDraftCode(event.target.value)} placeholder={t('watchlist.addPlaceholder')} disabled={watchlistActioning} aria-label={t('watchlist.addPlaceholder')} />
+            <Button type="submit" variant="secondary" size="sm" disabled={!draftCode.trim() || watchlistActioning} aria-label={t('watchlist.add')}>
+              <Plus className="h-4 w-4" aria-hidden="true" />
+            </Button>
+          </form>
+          <Button type="button" variant="ghost" size="sm" disabled={watchlistLoading} onClick={() => void onRefreshWatchlist()} aria-label={t('watchlist.refreshAria')}>
+            <RefreshCw className={`h-4 w-4 ${watchlistLoading ? 'animate-spin' : ''}`} aria-hidden="true" />
+            {t('watchlist.refresh')}
+          </Button>
+        </div>
+      </header>
+
+      <div className="terminal-watchlist-controls">
+        <div className="terminal-filter-row" role="group" aria-label={t('watchlist.filterAria')}>
+          {filters.map((item) => (
+            <button key={item.key} type="button" className={filter === item.key ? 'is-active' : ''} onClick={() => setFilter(item.key)} aria-pressed={filter === item.key}>
+              {item.label} <span className="terminal-mono">{item.count}</span>
+            </button>
+          ))}
+        </div>
+        <div className="terminal-batch-row">
+          <label>
+            <input type="checkbox" checked={allVisibleSelected} disabled={visibleRows.length === 0 || isBatchAnalyzing} onChange={handleToggleAll} data-testid="watchlist-select-all" />
+            {t('watchlist.selectAll')}
+          </label>
+          <span className="terminal-meta" data-testid="watchlist-selected-count">{t('watchlist.selectedCount', { count: selectedRowCodes.length })}</span>
+          <Button type="button" size="sm" variant="secondary" disabled={selectedRowCodes.length === 0 || isBatchAnalyzing} onClick={() => void onAnalyzeWatchlist('selected', selectedRowCodes)} data-testid="watchlist-analyze-selected">
+            <Play className="h-4 w-4" aria-hidden="true" />
+            {t('watchlist.analyzeSelected')}
+          </Button>
+          {isBatchAnalyzing ? (
+            <Button type="button" size="sm" variant="secondary" disabled={isBatchStopRequested} onClick={onStopAnalyzeWatchlist} data-testid="watchlist-stop-analysis">
+              <StopCircle className="h-4 w-4" aria-hidden="true" />
+              {isBatchStopRequested ? t('watchlist.stoppingAnalysis') : t('watchlist.stopAnalysis')}
+            </Button>
+          ) : null}
+        </div>
       </div>
 
-      <ScrollArea
-        viewportClassName="px-3 py-3 sm:px-4 overscroll-y-contain touch-pan-y"
-        className="min-h-0 flex-1"
-        testId="home-stock-workspace-scroll"
-      >
-        {activeTab === 'watchlist' ? (
-          watchlistLoading ? (
-            <DashboardStateBlock loading compact title={t('watchlist.loading')} />
-          ) : watchlistRows.length === 0 ? (
-            <DashboardStateBlock
-              compact
-              title={t('watchlist.emptyTitle')}
-              description={t('watchlist.emptyDescription')}
-            />
-          ) : (
-            <div className="space-y-1.5">
-              <div className="flex items-center gap-2 text-[11px] text-muted-text">
-                <ArrowDownWideNarrow className="h-3.5 w-3.5" aria-hidden="true" />
-                {t('watchlist.listHint')}
-              </div>
-              {watchlistRows.map((row) => (
-                <WatchlistRowItem
-                  key={row.code}
-                  row={row}
-                  onRemove={async (code) => {
-                    setWorkspaceNoticeCode(null);
-                    await onRemoveFromWatchlist(code);
-                  }}
-                  onOpenDetail={handleWatchlistRowOpen}
-                  disabled={watchlistActioning}
-                  selected={
-                    (typeof selectedRecordId === 'number' && selectedRecordId === row.latestItem?.id)
-                    || (
-                      Boolean(selectedStockCode)
-                      && (
-                        areStockCodesEquivalent(selectedStockCode ?? '', row.code)
-                        || areStockCodesEquivalent(selectedStockCode ?? '', row.latestItem?.stockCode ?? '')
-                      )
-                    )
-                  }
-                />
-              ))}
-            </div>
-          )
-        ) : isLoadingTodayItems ? (
+      {batchStatus ? <div className={`terminal-notice is-${batchStatus.variant}`}>{batchStatus.message}</div> : null}
+      {watchlistMessage ? <div className="terminal-notice">{watchlistMessage}</div> : null}
+      {visibleWorkspaceNotice ? <InlineAlert variant="warning" message={visibleWorkspaceNotice} className="terminal-inline-alert" /> : null}
+
+      <div className="terminal-table-scroll min-h-0 flex-1">
+        {watchlistLoading ? (
           <DashboardStateBlock loading compact title={t('watchlist.loading')} />
-        ) : todayLoadError ? (
-          <DashboardStateBlock
-            compact
-            title={t('watchlist.todayLoadErrorTitle')}
-            description={t('watchlist.todayLoadErrorDescription')}
-          />
-        ) : todayItems.length === 0 ? (
-          <DashboardStateBlock
-            compact
-            title={t('watchlist.todayEmptyTitle')}
-            description={t('watchlist.todayEmptyDescription')}
-          />
+        ) : watchlistRows.length === 0 ? (
+          <DashboardStateBlock compact title={t('watchlist.emptyTitle')} description={t('watchlist.emptyDescription')} />
+        ) : visibleRows.length === 0 ? (
+          <DashboardStateBlock compact title={t('watchlist.filterEmpty')} />
         ) : (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 text-[11px] text-muted-text">
-              <ArrowDownWideNarrow className="h-3.5 w-3.5" aria-hidden="true" />
-              {t('watchlist.todaySortHint')}
-            </div>
-            {todayItems.map((item) => (
-              <TodayItem key={`${item.stockCode}-${item.id}`} item={item} onClick={onHistoryItemClick} />
-            ))}
-          </div>
+          <table className="terminal-watchlist-table">
+            <thead>
+              <tr>
+                <th className="terminal-spine" aria-hidden="true" />
+                <th className="terminal-select-col"><span className="sr-only">{t('watchlist.selectAll')}</span></th>
+                <th>{t('terminal.symbol')}</th>
+                <th className="is-numeric">{t('terminal.price')}</th>
+                <th className="is-numeric"><button type="button" onClick={() => setSort('change')}>{t('terminal.changePct')}</button></th>
+                <th className="is-numeric"><button type="button" onClick={() => setSort('score')}>{t('terminal.score')}</button></th>
+                <th>{t('terminal.verdict')}</th>
+                <th className="is-numeric">{t('terminal.entry')}</th>
+                <th className="is-numeric">{t('terminal.stop')}</th>
+                <th className="is-numeric">{t('terminal.deviation')}</th>
+                <th><button type="button" onClick={() => setSort('recent')}>{t('terminal.updated')}</button></th>
+                <th><span className="sr-only">{t('common.delete')}</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRows.map((row) => {
+                const item = row.latestItem;
+                const currentPrice = row.quote?.currentPrice ?? item?.currentPrice;
+                const changePct = rowChangePct(row);
+                const tone = getVerdictTone(row);
+                const todayStateLabel = row.isTodayStatusLoading
+                  ? t('watchlist.todayStatusLoading')
+                  : row.isTodayStatusUnknown
+                    ? t('watchlist.todayStatusUnavailable')
+                    : row.analyzedToday
+                      ? t('watchlist.analyzedToday')
+                      : t('watchlist.notAnalyzedToday');
+                const detailAriaLabel = row.isTodayStatusLoading
+                  ? t('watchlist.latestDetailLoadingAria', { code: row.code })
+                  : row.isTodayStatusUnknown
+                    ? t('watchlist.latestDetailUnavailableAria', { code: row.code })
+                    : !item
+                      ? t('watchlist.noLatestDetailAria', { code: row.code })
+                      : t('watchlist.openLatestDetailAria', { code: row.code });
+                const detailStatus = row.isTodayStatusLoading
+                  ? t('watchlist.latestDetailLoadingCta')
+                  : row.isTodayStatusUnknown
+                    ? t('watchlist.latestDetailUnavailableCta')
+                    : !item
+                      ? t('watchlist.noLatestDetailCta')
+                      : getVerdict(row);
+                const selected = selectedRowCodes.some((code) => areStockCodesEquivalent(code, row.code));
+                const isCurrent = (typeof selectedRecordId === 'number' && selectedRecordId === item?.id)
+                  || Boolean(selectedStockCode && areStockCodesEquivalent(selectedStockCode, row.code));
+                return (
+                  <tr
+                    key={row.code}
+                    className={isCurrent ? 'is-current' : ''}
+                    onClick={(event) => {
+                      if ((event.target as HTMLElement).closest('button,input,a')) return;
+                      handleOpenRow(row);
+                    }}
+                    data-testid={`watchlist-row-${row.code}`}
+                  >
+                    <td className={`terminal-spine is-${tone}`} aria-hidden="true"><i /></td>
+                    <td className="terminal-select-col">
+                      <input type="checkbox" checked={selected} disabled={watchlistActioning} onChange={() => handleToggleSelection(row.code)} data-testid={`watchlist-select-${row.code}`} aria-label={t('watchlist.selectAria', { code: row.code })} />
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="terminal-symbol"
+                        aria-label={detailAriaLabel}
+                        aria-pressed={isCurrent}
+                        onClick={() => handleOpenRow(row)}
+                      >
+                        <strong>{item?.stockName || row.quote?.stockName || row.code}</strong>
+                        <span className="terminal-mono">
+                          {row.code}{row.isHeld ? ` · ${t('terminal.held')}` : ''}
+                          <i className={`terminal-today-dot ${row.isTodayStatusLoading || row.isTodayStatusUnknown ? 'is-pending' : row.analyzedToday ? 'is-ready' : ''}`} aria-label={todayStateLabel} />
+                        </span>
+                      </button>
+                    </td>
+                    <td className="is-numeric terminal-mono terminal-quote-cell">
+                      <strong>{formatPrice(currentPrice)}</strong>
+                      {row.quote ? (
+                        <span
+                          className={row.quote.isStale || row.quote.refreshStatus === 'failed' ? 'is-stale' : ''}
+                          aria-label={t('terminal.quoteMetaAria', {
+                            source: quoteSourceLabel(row.quote.source),
+                            time: row.quote.lastSuccessAt ? formatDateTime(row.quote.lastSuccessAt) : '--',
+                            status: row.quote.refreshStatus === 'failed'
+                              ? t('terminal.quoteFailed')
+                              : row.quote.isStale
+                                ? t('terminal.quoteStale')
+                                : quoteAgeLabel(row.quote, t),
+                          })}
+                        >
+                          {quoteSourceLabel(row.quote.source)} · {row.quote.refreshStatus === 'failed'
+                            ? t('terminal.quoteFailed')
+                            : row.quote.isStale
+                              ? `${t('terminal.quoteStale')} ${quoteAgeLabel(row.quote, t)}`
+                              : quoteAgeLabel(row.quote, t)}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className={`is-numeric terminal-mono ${changeTone(changePct)}`}>{formatChange(changePct)}</td>
+                    <td className="is-numeric terminal-mono terminal-score">{item?.sentimentScore ?? '--'}</td>
+                    <td>{row.activeTask ? <TerminalStatus task={row.activeTask} /> : <span className={`terminal-verdict is-${tone}`}>{detailStatus}</span>}</td>
+                    <td className="is-numeric terminal-mono">{formatStrategyPoint(item?.idealBuy)}</td>
+                    <td className="is-numeric terminal-mono">{formatStrategyPoint(item?.stopLoss)}</td>
+                    <td className={`is-numeric terminal-mono ${changeTone(item?.biasMa5)}`}>{formatChange(item?.biasMa5)}</td>
+                    <td
+                      className="terminal-mono terminal-update"
+                      aria-label={item?.lastAnalysisTime ? t('watchlist.lastAnalysis', { time: formatDateTime(item.lastAnalysisTime) }) : undefined}
+                    >
+                      {row.activeTask ? `${Math.round(row.activeTask.progress || 0)}%` : compactTime(item?.lastAnalysisTime)}
+                    </td>
+                    <td>
+                      <button type="button" className="terminal-icon-button" disabled={watchlistActioning} onClick={() => void onRemoveFromWatchlist(row.code)} aria-label={t('watchlist.removeAria', { code: row.code })}>
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         )}
-      </ScrollArea>
-    </aside>
+      </div>
+    </section>
   );
 };
 

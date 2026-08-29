@@ -4,6 +4,11 @@ import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { StockHistoryTrendDrawer } from '../StockHistoryTrendDrawer';
 import type { AnalysisReport, HistoryItem } from '../../../types/analysis';
+import { historyApi } from '../../../api/history';
+
+vi.mock('../../../api/history', () => ({
+  historyApi: { getDetail: vi.fn() },
+}));
 
 const report: AnalysisReport = {
   meta: {
@@ -42,6 +47,7 @@ const items: HistoryItem[] = [
 describe('StockHistoryTrendDrawer', () => {
   beforeEach(() => {
     window.localStorage.clear();
+    vi.mocked(historyApi.getDetail).mockReset();
   });
 
   it('uses structured action in summary and rows', () => {
@@ -64,6 +70,26 @@ describe('StockHistoryTrendDrawer', () => {
 
     expect(screen.getAllByText('回避').length).toBeGreaterThanOrEqual(2);
     expect(screen.queryByText('买入')).not.toBeInTheDocument();
+  });
+
+  it('compares score, advice, trend and key levels with the previous report', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+    vi.mocked(historyApi.getDetail).mockResolvedValue({
+      ...report,
+      meta: { ...report.meta, id: 2, createdAt: '2026-03-19T08:00:00Z' },
+      strategy: { idealBuy: '1400', stopLoss: '1350', takeProfit: '1600' },
+    });
+    render(<UiLanguageProvider><StockHistoryTrendDrawer
+      report={{ ...report, strategy: { idealBuy: '1450', stopLoss: '1400', takeProfit: '1650' } }}
+      items={[items[0], { ...items[0], id: 2, queryId: 'q-2', sentimentScore: 30, operationAdvice: '观察', trendPrediction: '看空', createdAt: '2026-03-19T08:00:00Z' }]}
+      total={2} hasMore={false} isLoading={false} isLoadingMore={false}
+      filters={{ range: 'all', model: 'all', sort: 'desc' }} onClose={vi.fn()} onRangeChange={vi.fn()} onLoadMore={vi.fn()} onSelectRecord={vi.fn()} onRetry={vi.fn()}
+    /></UiLanguageProvider>);
+
+    expect(await screen.findByTestId('history-report-comparison')).toHaveTextContent('评分 +5');
+    expect(screen.getByTestId('history-report-comparison')).toHaveTextContent('看空 → 震荡');
+    await screen.findByText(/支撑 1400/);
+    expect(screen.getByTestId('history-report-comparison')).toHaveTextContent('支撑 1450');
   });
 
   it('keeps full legacy operation advice when structured action is absent', () => {

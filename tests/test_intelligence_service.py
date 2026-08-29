@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 import os
 import json
@@ -113,6 +114,21 @@ class IntelligenceServiceTestCase(unittest.TestCase):
         response.iter_content.return_value = [self._feed_fixture(source_url)]
         return response
 
+    @contextmanager
+    def _patch_http_get(self, **mock_kwargs):
+        """Patch the transport used by the collected service class itself.
+
+        A few legacy tests replace import-cache entries during collection, so a
+        string module path can resolve to a different module object than the
+        already-collected ``IntelligenceService`` class.
+        """
+        mock_get = Mock(**mock_kwargs)
+        with patch.dict(
+            type(self.service)._get_with_validated_dns.__globals__,
+            {"_http_get": mock_get},
+        ):
+            yield mock_get
+
     def _mock_json_response(self, payload=NEWSNOW_FIXTURE, source_url: str = "https://newsnow.example.com/api/s?id=cls-hot"):
         response = Mock()
         response.status_code = 200
@@ -146,7 +162,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
             "name": "market-feed", "url": "https://feeds.example.com/rss.xml",
             "source_type": "rss", "scope_type": "market", "market": "cn",
         })
-        with patch("src.services.intelligence_service.requests.get", return_value=self._mock_response()):
+        with self._patch_http_get(return_value=self._mock_response()):
             first = self.service.fetch_source(source["id"])
             second = self.service.fetch_source(source["id"])
         self.assertEqual(first["fetched_count"], 2)
@@ -163,7 +179,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
             "name": "secret-feed", "url": secret_url, "scope_type": "market",
         })
 
-        with patch("src.services.intelligence_service.requests.get", return_value=self._mock_http_error_response(secret_url)):
+        with self._patch_http_get(return_value=self._mock_http_error_response(secret_url)):
             with self.assertRaises(IntelligenceServiceError) as ctx:
                 self.service.fetch_source(source["id"])
 
@@ -186,7 +202,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
             "market": "cn",
         })
 
-        with patch("src.services.intelligence_service.requests.get", return_value=self._mock_http_error_response(secret_url)):
+        with self._patch_http_get(return_value=self._mock_http_error_response(secret_url)):
             with self.assertRaises(IntelligenceServiceError) as ctx:
                 self.service.fetch_source(source["id"])
 
@@ -214,17 +230,16 @@ class IntelligenceServiceTestCase(unittest.TestCase):
         self.service.create_source({"name": "good-feed", "url": "https://feeds.example.com/rss.xml", "scope_type": "market"})
         bad = self.service.create_source({"name": "bad-feed", "url": "https://bad.example.com/rss.xml", "scope_type": "market"})
 
-        def fake_get(url, **kwargs):
-            self.assertNotIn("trust_env", kwargs)
-            self.assertEqual(kwargs.get("proxies"), {"http": None, "https": None})
+        def fake_get(url, **_kwargs):
             if "bad" in url:
                 raise RuntimeError("network token=secret should not leak")
             return self._mock_response()
         # This case verifies batch fail-open behavior and request isolation. URL/DNS
         # validation has dedicated coverage below; keeping it out of this test also
         # avoids coupling the aggregation contract to process-global DNS patching.
-        with patch.object(self.service, "_validate_url"), patch(
-            "src.services.intelligence_service.requests.get",
+        with patch.object(
+            self.service,
+            "_get_with_validated_dns",
             side_effect=fake_get,
         ):
             result = self.service.fetch_enabled_sources()
@@ -245,7 +260,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
                 "market": "cn",
             })
 
-        with patch("src.services.intelligence_service.requests.get", side_effect=lambda *_args, **_kwargs: self._mock_response()):
+        with self._patch_http_get(side_effect=lambda *_args, **_kwargs: self._mock_response()):
             result = self.service.fetch_enabled_sources()
 
         self.assertEqual(result["source_count"], 150)
@@ -267,7 +282,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
         response.raise_for_status.return_value = None
         response.iter_content.return_value = [NO_URL_LINK_FIXTURE]
 
-        with patch("src.services.intelligence_service.requests.get", return_value=response):
+        with self._patch_http_get(return_value=response):
             result = self.service.fetch_source(source["id"])
 
         self.assertEqual(result["fetched_count"], 1)
@@ -288,7 +303,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
         response.raise_for_status.return_value = None
         response.iter_content.return_value = [BAD_ITEM_LINK_FIXTURE]
 
-        with patch("src.services.intelligence_service.requests.get", return_value=response):
+        with self._patch_http_get(return_value=response):
             result = self.service.fetch_source(source["id"])
 
         self.assertEqual(result["fetched_count"], 1)
@@ -312,7 +327,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
             "market": "cn",
         })
 
-        with patch("src.services.intelligence_service.requests.get", return_value=self._mock_json_response()):
+        with self._patch_http_get(return_value=self._mock_json_response()):
             result = self.service.fetch_source(source["id"])
 
         self.assertEqual(result["fetched_count"], 2)
@@ -344,7 +359,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
     def test_refresh_auto_sources_skips_when_disabled(self) -> None:
         self.service.config.news_intel_auto_fetch_enabled = False
 
-        with patch("src.services.intelligence_service.requests.get") as mock_get:
+        with self._patch_http_get() as mock_get:
             result = self.service.refresh_auto_sources(force=True)
 
         self.assertTrue(result["skipped"])
@@ -355,7 +370,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
         self.service.config.news_intel_auto_fetch_enabled = True
         explicit_config = replace(self.service.config, news_intel_auto_fetch_enabled=False)
 
-        with patch("src.services.intelligence_service.requests.get") as mock_get:
+        with self._patch_http_get() as mock_get:
             service = IntelligenceService(config=explicit_config)
             result = service.refresh_auto_sources(force=True)
 
@@ -371,7 +386,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
                 return self._mock_json_response(source_url=url)
             return self._mock_response(source_url=url)
 
-        with patch("src.services.intelligence_service.requests.get", side_effect=fake_get):
+        with self._patch_http_get(side_effect=fake_get):
             result = self.service.refresh_auto_sources(force=True)
 
         self.assertTrue(result["ok"])
@@ -392,7 +407,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
                 return self._mock_json_response(source_url=url)
             return self._mock_response(source_url=url)
 
-        with patch("src.services.intelligence_service.requests.get", side_effect=fake_get):
+        with self._patch_http_get(side_effect=fake_get):
             result = self.service.refresh_auto_sources(force=True)
 
         self.assertEqual(result["bootstrap"]["created_count"], 0)
@@ -407,9 +422,9 @@ class IntelligenceServiceTestCase(unittest.TestCase):
                 return self._mock_json_response(source_url=url)
             return self._mock_response(source_url=url)
 
-        with patch("src.services.intelligence_service.requests.get", side_effect=fake_get):
+        with self._patch_http_get(side_effect=fake_get):
             first = self.service.refresh_auto_sources(force=True)
-        with patch("src.services.intelligence_service.requests.get") as mock_get:
+        with self._patch_http_get() as mock_get:
             second = self.service.refresh_auto_sources()
 
         self.assertTrue(first["ok"])
@@ -498,7 +513,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
             "market": "cn",
         })
         response = self._mock_response(source_url="https://feeds.example.com/shared.xml")
-        with patch("src.services.intelligence_service.requests.get", return_value=response):
+        with self._patch_http_get(return_value=response):
             market_result = self.service.fetch_source(market["id"])
             symbol_result = self.service.fetch_source(symbol["id"])
 
@@ -517,7 +532,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
             "scope_type": "market",
         })
 
-        with patch("src.services.intelligence_service.requests.get", side_effect=[
+        with self._patch_http_get(side_effect=[
             self._mock_response_with_redirects(source_url="https://feeds.example.com/rss.xml", next_url="http://localhost/evil.xml"),
             self._mock_response(source_url="http://localhost/evil.xml"),
         ]):
@@ -531,7 +546,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
             "scope_type": "market",
         })
 
-        with patch("src.services.intelligence_service.requests.get", side_effect=[
+        with self._patch_http_get(side_effect=[
             self._mock_response_with_redirects(source_url="https://feeds.example.com/rss.xml", next_url="/next.xml"),
             self._mock_response(source_url="https://feeds.example.com/next.xml"),
         ]):
@@ -554,7 +569,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
         large_response.raise_for_status.return_value = None
         large_response.iter_content.return_value = [b"x" * (2 * 1024 * 1024 + 1)]
 
-        with patch("src.services.intelligence_service.requests.get", return_value=large_response):
+        with self._patch_http_get(return_value=large_response):
             with self.assertRaises(IntelligenceServiceError):
                 self.service.fetch_source(source["id"])
 

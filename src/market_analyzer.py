@@ -33,6 +33,8 @@ from src.llm.generation_backend import GenerationError
 from src.schemas.market_light import MARKET_LIGHT_REGIONS, MarketLightSnapshot
 from src.services.run_diagnostics import record_llm_run, record_llm_run_started
 from src.services.intelligence_service import IntelligenceService
+from src.services.a_share_market_temperature import AShareMarketTemperatureService
+from src.core.trading_calendar import build_market_phase_context
 from data_provider.base import DataFetcherManager
 
 logger = logging.getLogger(__name__)
@@ -103,6 +105,8 @@ class MarketOverview:
     bottom_sectors: List[Dict] = field(default_factory=list)  # 跌幅前5板块
     top_concepts: List[Dict] = field(default_factory=list)    # 涨幅前5概念
     bottom_concepts: List[Dict] = field(default_factory=list) # 跌幅前5概念
+    # 补充风险环境，仅作为报告上下文，不参与 Market Light 评分。
+    supplemental_indicators: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -147,6 +151,7 @@ class MarketAnalyzer:
         self.search_service = search_service
         self.analyzer = analyzer
         self.data_manager = DataFetcherManager()
+        self.a_share_market_temperature = AShareMarketTemperatureService()
         self.region = region if region in ("cn", "us", "hk", "jp", "kr") else "cn"
         self.profile: MarketProfile = get_profile(self.region)
         self.strategy = get_market_strategy_blueprint(self.region)
@@ -421,14 +426,23 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             }
         return mapping[mood_key]
 
-    def get_market_overview(self) -> MarketOverview:
+    def get_market_overview(self, *, force_refresh: bool = False) -> MarketOverview:
         """
         获取市场概览数据
         
         Returns:
             MarketOverview: 市场概览数据对象
         """
-        today = datetime.now().strftime('%Y-%m-%d')
+        phase_context = build_market_phase_context(
+            market=self.region,
+            trigger_source="market_review",
+        )
+        overview_date = (
+            phase_context.session_date
+            if phase_context.is_trading_day is not False
+            else phase_context.effective_daily_bar_date
+        )
+        today = overview_date.isoformat()
         overview = MarketOverview(date=today)
         
         # 1. 获取主要指数行情（按 region 切换 A 股/美股）
@@ -436,7 +450,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         # 2. 获取涨跌统计（A 股有，美股无等效数据）
         if self.profile.has_market_stats:
-            self._get_market_statistics(overview)
+            self._get_market_statistics(overview, force_refresh=force_refresh)
 
         # 3. 获取板块涨跌榜（A 股有，美股暂无）
         if self.profile.has_sector_rankings:
@@ -491,12 +505,15 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         return indices
 
-    def _get_market_statistics(self, overview: MarketOverview):
+    def _get_market_statistics(self, overview: MarketOverview, *, force_refresh: bool = False):
         """获取市场涨跌统计"""
         try:
             logger.info("[大盘] %s action=get_market_stats status=start", self._log_context())
 
-            stats = self.data_manager.get_market_stats(purpose=f"market_review:{self.region}")
+            stats = self.data_manager.get_market_stats(
+                purpose=f"market_review:{self.region}",
+                force_refresh=force_refresh,
+            )
 
             if stats:
                 overview.up_count = stats.get('up_count', 0)
@@ -828,6 +845,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 "total_amount": overview.total_amount,
                 "turnover_unit": self._get_turnover_unit_label(),
             }
+
+        if overview.supplemental_indicators:
+            payload["market_context_indicators"] = overview.supplemental_indicators
 
         return payload
 
@@ -1533,6 +1553,10 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
             )
 
         output_template_sections = self._build_output_template_sections(review_language)
+        supplemental_block = AShareMarketTemperatureService.format_prompt_block(
+            overview.supplemental_indicators,
+            language=review_language,
+        )
         zh_market_scope_name = self._get_market_scope_name("zh")
         zh_report_title = f"{overview.date} 大盘复盘"
         if self.region in ("jp", "kr"):
@@ -1568,6 +1592,8 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
 {stats_block}
 
 {sector_block}
+
+{supplemental_block}
 
 {data_limits_block}
 
@@ -1622,6 +1648,8 @@ Output the report content directly, no extra commentary.
 {stats_block}
 
 {sector_block}
+
+{supplemental_block}
 
 {data_limits_block}
 
@@ -1776,6 +1804,10 @@ Market conditions can change quickly. The data above is for reference only and d
             if self.profile.has_market_stats
             else ""
         )
+        supplemental_section = AShareMarketTemperatureService.format_prompt_block(
+            overview.supplemental_indicators,
+            language=template_language,
+        )
         return f"""## {overview.date} 大盘复盘
 
 > 今日{market_label}市场整体呈现**{market_mood}**态势，优先观察{summary_focus}。
@@ -1787,6 +1819,7 @@ Market conditions can change quickly. The data above is for reference only and d
 {indices_block or indices_text or "暂无指数数据。"}
 {sector_section}
 {funds_section}
+{supplemental_section}
 
 ### 五、消息催化
 - 暂无可用新闻时，应降低对题材持续性的确定性判断。
@@ -1806,6 +1839,15 @@ Market conditions can change quickly. The data above is for reference only and d
 
         # 1. 获取市场概览
         overview = self.get_market_overview()
+        if self.region == "cn":
+            try:
+                overview.supplemental_indicators = self.a_share_market_temperature.get_context()
+            except Exception as exc:
+                logger.warning(
+                    "[大盘] %s action=fetch_market_temperature status=failed error=%s",
+                    self._log_context(),
+                    exc,
+                )
 
         # 2. 搜索市场新闻
         news = self.search_market_news()

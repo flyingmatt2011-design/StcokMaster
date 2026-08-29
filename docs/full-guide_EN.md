@@ -156,8 +156,8 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `BOCHA_API_KEYS` | [Bocha Search](https://open.bocha.cn/) Web Search API (Chinese search optimized, supports AI summaries, multiple keys comma-separated) | Optional |
 | `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/) API (privacy-first, US-stock news enrichment, comma-separated for multiple keys) | Optional |
 | `MINIMAX_API_KEYS` | [MiniMax](https://platform.minimax.io/) Coding Plan Web Search (structured search results) | Optional |
-| `SEARXNG_BASE_URLS` | SearXNG self-hosted instances (quota-free fallback, enable format: json in settings.yml); when empty the app auto-discovers public instances | Optional |
-| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | Auto-discover public SearXNG instances from `searx.space` when `SEARXNG_BASE_URLS` is empty (default `true`) | Optional |
+| `SEARXNG_BASE_URLS` | SearXNG self-hosted instances (quota-free fallback, enable format: json in settings.yml) | Optional |
+| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | Auto-discover public SearXNG instances from `searx.space` when `SEARXNG_BASE_URLS` is empty (default `false`) | Optional |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638) Token | Optional |
 | `TUSHARE_HTTP_URL` | Tushare Pro HTTP endpoint; when unset/empty defaults to the official `http://api.tushare.pro`. Set to a `http://` or `https://` URL only when routing through a corporate proxy, cross-border network, or a self-hosted mirror | Optional |
 | `TICKFLOW_API_KEY` | [TickFlow](https://tickflow.org) API key for optional A-share daily K-lines, realtime quotes, stock list/name lookup, and CN market review enhancement; permission or entitlement failures fall back to existing providers | Optional |
@@ -212,7 +212,7 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | `GENERATION_FALLBACK_BACKEND` | Backend-level fallback. Unset defaults to `litellm`; an empty value disables fallback; self fallback resolves to no-op | `litellm` | No |
 | `GENERATION_BACKEND_TIMEOUT_SECONDS` | Per-call generation backend timeout in seconds, mainly for local CLI backends; range `1-3600` | `300` | No |
 | `GENERATION_BACKEND_MAX_OUTPUT_BYTES` | Total captured diagnostic stdout/stderr plus final-response size limit for one local CLI backend call; final responses duplicated to stdout by `--output-last-message` are not counted twice; range `1-33554432` | `1048576` | No |
-| `GENERATION_BACKEND_MAX_CONCURRENCY` | Global generation backend concurrency cap; range `1-16`, does not change LiteLLM Router or `MAX_WORKERS` behavior | `1` | No |
+| `GENERATION_BACKEND_MAX_CONCURRENCY` | Process-wide model-generation cap, range `1-16`, applied to LiteLLM (official APIs and relay channels) and local CLI while market-data/news preparation remains parallel | `1` | No |
 | `LOCAL_CLI_BACKEND_MAX_CONCURRENCY` | Local CLI backend concurrency cap; range `1-4`, effective concurrency is the lower of this value and `GENERATION_BACKEND_MAX_CONCURRENCY` | `1` | No |
 | `AGENT_BACKEND` | Runtime for the existing ask-stock Chat: `auto` (recommended, preserves the default model), `litellm`, or `codex_app_server` (experimental, single-agent Chat only) | `auto` | No |
 | `AGENT_GENERATION_BACKEND` | Agent Chat generation backend. Web settings only expose `auto|litellm`; hand-written local CLI backends return an unsupported tool-calling diagnostic | `auto` | No |
@@ -332,13 +332,13 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search (structured results) | Optional |
 | `SOCIAL_SENTIMENT_API_KEY` | Stock Sentiment API Key (Reddit / X / Polymarket, US stocks optional) | Optional |
 | `SOCIAL_SENTIMENT_API_URL` | Stock Sentiment API endpoint (default `https://api.adanos.org`) | Optional |
-| `SEARXNG_BASE_URLS` | SearXNG self-hosted instances (quota-free fallback, enable format: json in settings.yml); when empty the app auto-discovers public instances | Optional |
-| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | Auto-discover public SearXNG instances from `searx.space` when `SEARXNG_BASE_URLS` is empty (default `true`) | Optional |
+| `SEARXNG_BASE_URLS` | SearXNG self-hosted instances (quota-free fallback, enable format: json in settings.yml) | Optional |
+| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | Auto-discover public SearXNG instances from `searx.space` when `SEARXNG_BASE_URLS` is empty (default `false`) | Optional |
 | `NEWS_STRATEGY_PROFILE` | News-window profile: `ultra_short` (1d), `short` (3d), `medium` (7d), or `long` (30d) | Default `short` |
 | `NEWS_MAX_AGE_DAYS` | Maximum age admitted into the current-news context | Default `3` |
 | `NEWS_SEARCH_MAX_WORKERS` | Maximum concurrent comprehensive-search dimensions (1-10); the conservative default reduces downstream rate-limit risk | Default `3` |
 
-> Behavior note: Search and social sentiment are optional enhancement services. Failures remain fail-open, while the news context explicitly distinguishes `COVERED`, `EMPTY_CONFIRMED`, `PARTIAL`, and `UNAVAILABLE` so unavailable sources are not mistaken for absence of downside news. Structured intelligence and generic search run concurrently; generic-search dimensions are bounded by `NEWS_SEARCH_MAX_WORKERS`.
+> Behavior note: Search and social sentiment are optional enhancement services. Failures remain fail-open, while the news context explicitly distinguishes `COVERED`, `EMPTY_CONFIRMED`, `PARTIAL`, and `UNAVAILABLE` so unavailable sources are not mistaken for absence of downside news. Structured intelligence and generic search run concurrently; generic-search dimensions are bounded by `NEWS_SEARCH_MAX_WORKERS`. StockMaster Desktop can save and test Bocha, Tavily, Brave, SerpAPI, and self-hosted SearXNG from Settings > News Search API. Public SearXNG is disabled by default; when explicitly enabled, repeated public-instance failures open a 15-minute circuit breaker so later news dimensions fail fast.
 
 ### Futu Portfolio Import Configuration
 
@@ -377,6 +377,8 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 
 > **Behavior Notes:**
 > - **A-shares**: Returns aggregated capabilities by `valuation/growth/earnings/institution/capital_flow/dragon_tiger/boards`.
+> - **A-share fundamentals do not require a Tushare token**: token-free BaoStock fills quarterly profitability, growth, cash-flow quality, earnings forecasts/express reports, and cash dividends; AKShare public endpoints continue to supply institutional holdings, top free-float shareholders, and capital flow. Successful results are stored under `provider_cache` beside the database for the latest weekday session (Friday is reused over the weekend); cache failures remain fail-open.
+> - A-share analysis also fetches structured EastMoney announcements/research and SZSE CNInfo investor Q&A with bounded publication-date windows. Five-year empirical PE/PB/PS percentiles come from EastMoney valuation history with an AKShare/Baidu fallback. These additions feed analysis context and report details only; scoring formulas and advice thresholds are unchanged.
 > - **ETFs**: Returns available items, marks missing capabilities as `not_supported`, and does not affect the original flow overall.
 > - **US/HK stocks**: Returns `valuation/growth/earnings/belong_boards` (sourced from `info.sector`/`info.industry`) via the yfinance adapter; `institution/capital_flow/dragon_tiger/boards` stay `not_supported` because no offshore data feed exists today. Falls back to a full `not_supported` block if yfinance is unavailable or returns empty payloads. Still fail-open.
 > - **Japanese/Korean stocks**: Current MVP uses Yfinance daily/basic quote coverage only; `institution`, `capital_flow`, `dragon_tiger`, and `boards` are not fully supported and degrade to `not_supported` (see [market boundaries](market-support.md)).
@@ -418,6 +420,8 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `LOG_DIR` | Log directory | `./logs` |
 | `SAVE_CONTEXT_SNAPSHOT` | Persist analysis-history `context_snapshot`. When false, new history records do not save enhanced_context, market_phase_summary, AnalysisContextPack overview, or diagnostic snapshots, but current-run prompt summaries remain enabled | `true` |
 
+StockMaster Desktop keeps at most two watchlist-analysis tasks active and starts the next stock when either task finishes. After **Stop analysis** is requested, no new stock is submitted, while tasks that already started are allowed to finish. This scheduler only reduces batch waiting time; it does not change per-stock analysis strategy, scoring, or data-source priority. The backend queue remains capped by `MAX_WORKERS`.
+
 > Behavior notes:
 > - When `TICKFLOW_API_KEY` is configured, TickFlow is instantiated as an optional A-share daily K-line data source and CN market-review enhancer. `TICKFLOW_PRIORITY` only affects the daily K-line/general provider fallback chain. Realtime quote priority is controlled separately by `REALTIME_SOURCE_PRIORITY`; TickFlow realtime quotes are used only when that list explicitly includes `tickflow`, and any source listed before `tickflow` is tried first.
 > - TickFlow daily K-lines default to `TICKFLOW_KLINE_ADJUST=none`; daily `volume` is converted from lots to shares, while `amount` remains in yuan.
@@ -435,6 +439,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 > - Verifiable evidence summary: official provider / Base URL / model-name sources remain the [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md#official-references-for-provider-presets--base-urls--model-naming), and the locked runtime dependency window remains `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` in `requirements.txt`; this scope adds no migration script or cleanup branch, and save/import still writes only submitted keys. `tests/test_system_config_service.py::SystemConfigServiceTestCase::test_update_market_review_region_does_not_trigger_runtime_model_cleanup` covers saving `MARKET_REVIEW_REGION` without clearing or rewriting existing `LITELLM_CONFIG`, `LLM_CHANNELS`, `LLM_OPENAI_*`, `LITELLM_MODEL`, `AGENT_LITELLM_MODEL`, `LITELLM_FALLBACK_MODELS`, `VISION_MODEL`, `OPENAI_*`, and related runtime settings.
 > - Rollback is a restore-and-recover path: apply pre-PR `.env` / config backup for the above keys, restore `MARKET_REVIEW_REGION`, and restart the runtime; or revert this PR directly.
 > - CN market review reports now use a post-market workstation layout with market signal, index detail, sector Top tables, news catalysts, next-session plan, and risk sections. The market signal uses a plain-text score such as `66/100 (constructive, risk-on)` instead of block bars so it renders consistently across terminals and notification clients. News catalysts list only headline, source, and link instead of search snippets to reduce mixed-language noise. Missing data sources degrade by omitting or simplifying only the affected block.
+> - CN market review best-effort adds public AKShare context for 50ETF QVIX, the equity-bond spread, the Buffett indicator, and new-high/new-low breadth. Individual daily bars also receive deterministic W-bottom, V-reversal, cup-and-handle, triple-bottom, and trend-pullback labels. All are explicitly context-only and are excluded from Market Light and individual-stock scores.
 > - Per-stock analysis, realtime quote priority, and sector rankings fallback remain unchanged.
 
 ---
@@ -449,6 +454,10 @@ Official image registries:
 - Docker Hub: `<DOCKERHUB_USERNAME>/daily_stock_analysis:<tag>` (driven by the publisher's `DOCKERHUB_USERNAME` secret; the official release uses `zhulinsen/daily_stock_analysis`)
 
 ### Quick Start
+
+For a minimal local or StockMaster desktop setup, copy `.env.quickstart.example` to `.env` and fill in a model credential. The quickstart file is generated from `src/core/config_profiles.py`; `.env.example` remains the complete advanced reference. `CONFIG_VALIDATE_MODE=warn` logs structured issues and keeps compatibility, while `strict` stops startup only when error-level issues exist.
+
+When the StockMaster desktop shared-fetch cache is enabled, the app prewarms and reuses the current A-share daily market context in the background. The home page restores index and market-breadth values from the latest persisted market review. Watchlist entry, stop-loss, and MA5-deviation values are display fields copied from each stock's latest persisted report; they are not recalculated and do not change the scoring rules. Chip data is reused only from a successful cache entry for the current effective trading session.
 
 ```bash
 # 1. Clone repository
@@ -1404,6 +1413,8 @@ FastAPI provides RESTful API service for configuration management and triggering
 ### Features
 
 - **Configuration Management** - View/modify watchlist
+- **Lightweight Home market refresh** - Opening or reloading Home refreshes market data immediately; while the window is visible and focused, the refresh repeats every five minutes. It only reads indices, market breadth, and sector quotes, with no news search, LLM call, history write, or model-token usage. Manual Market Review still runs the full news and LLM workflow and updates Home when it completes.
+- **Live watchlist prices** - On page open, watchlist-code changes, and window reactivation, Home checks the A-share exchange phase first and only sends the batch quote request while the market is open; lunch, after-close periods, weekends, and exchange holidays do not touch public quote providers, while explicit manual refresh remains available. Automatic polling runs every 5 seconds during trading and every 30 seconds while a watchlist batch analysis is running, then resumes at the next session boundary. The backend shares a process-wide 3-second cache and coalesces concurrent quote requests. A transient batch-source failure keeps the latest successful values, retries only failed symbols with 5/15/30/60-second backoff, and does not expand into per-symbol multi-source retries. The list exposes the refresh phase, provider, last successful timestamp, and stale state. The displayed latest-analysis time remains the report timestamp and is not replaced by quote time. Analysis-summary rows refresh on entry, visibility restoration, manual refresh, or task completion rather than on the generic 30-second dashboard interval.
 - **Home workspace tri-view** - Home has History / Watchlist / Today tabs, with History as the default view; on mobile, each list's inner viewport owns vertical touch scrolling without an outer card clipping the gesture, while desktop cards keep their visual clipping boundary; a watchlist row opens its confirmed latest report with mouse or keyboard, and its notice always follows the current lookup-in-progress, lookup-failed, or confirmed-no-detail state; every stock-bar request and the data refresh after task completion enter the unsettled state immediately, so stale stock-bar and fallback reports stay unavailable while status is being reconfirmed or is unknown; Refresh retries both the watchlist and detail status, with per-stock fallback lookups using a fixed concurrency bound and obsolete batches cancelled on refresh or page-state changes; Watchlist supports batch submission for all stocks or only those not analyzed today
 - **Collapsible task panel** - The Home task panel can be collapsed or expanded; the collapsed state keeps pending/processing summaries visible, gives more sidebar space to the watchlist, and persists for the current page session
 - **UI Language Switch** - Toggle UI language (`zh`/`en`) on login page, shell/navigation, settings page, and shared controls; this switch is independent of `REPORT_LANGUAGE`.
@@ -1438,6 +1449,7 @@ For this feature, the product behavior is:
 |------|------|------|
 | `/api/v1/analysis/analyze` | POST | Trigger stock analysis |
 | `/api/v1/analysis/market-review` | POST | Trigger a background market review; request body may pass `{"send_notification": true, "region": "cn,us"}`; `region` applies only to this request and shares the same runtime construction semantics as `main.py --market-review` and Bot commands |
+| `/api/v1/analysis/market-snapshot?region=cn` | GET | Return a market-data-only Home snapshot without news search, LLM calls, or report persistence |
 | `/api/v1/analysis/tasks` | GET | Query task list |
 | `/api/v1/analysis/tasks/stream` | GET (SSE) | Subscribe to realtime task updates |
 | `/api/v1/analysis/status/{task_id}` | GET | Query task status |
@@ -1464,6 +1476,8 @@ For this feature, the product behavior is:
 | `/api/v1/backtest/results` | GET | Query backtest results (paginated) |
 | `/api/v1/backtest/performance` | GET | Get overall backtest performance |
 | `/api/v1/backtest/performance/{code}` | GET | Get per-stock backtest performance |
+| `/api/v1/stocks/quotes` | POST | Batch-fetch watchlist quotes from `{"stock_codes":["600519","000001"]}`; partial success is allowed, no LLM is invoked, and each item can include `source`, `last_success_at`, `is_stale`, `refresh_status`, `failure_count`, and `next_retry_at` |
+| `/api/v1/stocks/quotes/refresh-policy` | GET | Return the current A-share session phase, open state, and next transition without accessing a quote provider or LLM |
 | `/api/health` | GET | Health check |
 | `/docs` | GET | API Swagger documentation |
 

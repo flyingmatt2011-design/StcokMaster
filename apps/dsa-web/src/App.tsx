@@ -13,16 +13,9 @@ import { useAgentChatStore } from './stores/agentChatStore';
 import './App.css';
 
 const HomePage = lazy(() => import('./pages/HomePage'));
-const BacktestPage = lazy(() => import('./pages/BacktestPage'));
-const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const StockMasterSettingsPage = lazy(() => import('./pages/StockMasterSettingsPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
-const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
-const ChatPage = lazy(() => import('./pages/ChatPage'));
-const PortfolioPage = lazy(() => import('./pages/PortfolioPage'));
-const DecisionSignalsPage = lazy(() => import('./pages/DecisionSignalsPage'));
-const AlertsPage = lazy(() => import('./pages/AlertsPage'));
-const TokenUsagePage = lazy(() => import('./pages/TokenUsagePage'));
-const StockScreeningPage = lazy(() => import('./pages/StockScreeningPage'));
+const StockMasterHoldingsPage = lazy(() => import('./pages/StockMasterHoldingsPage'));
 
 const AppContent: React.FC = () => {
   const location = useLocation();
@@ -80,15 +73,9 @@ const AppContent: React.FC = () => {
         )}
       >
         <Route path="/" element={<HomePage />} />
-        <Route path="/chat" element={<ChatPage />} />
-        <Route path="/portfolio" element={<PortfolioPage />} />
-        <Route path="/decision-signals" element={<DecisionSignalsPage />} />
-        <Route path="/screening" element={<StockScreeningPage />} />
-        <Route path="/backtest" element={<BacktestPage />} />
-        <Route path="/alerts" element={<AlertsPage />} />
-        <Route path="/usage" element={<TokenUsagePage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="*" element={<NotFoundPage />} />
+        <Route path="/portfolio" element={<StockMasterHoldingsPage />} />
+        <Route path="/settings" element={<StockMasterSettingsPage />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
   );

@@ -325,6 +325,25 @@ export interface TestNotificationChannelResponse {
   attempts: NotificationTestAttempt[];
 }
 
+export type SearchTestProvider = 'bocha' | 'tavily' | 'brave' | 'serpapi' | 'searxng';
+
+export interface TestSearchProviderRequest {
+  provider: SearchTestProvider;
+  items?: SystemConfigUpdateItem[];
+  maskToken?: string;
+  query?: string;
+}
+
+export interface TestSearchProviderResponse {
+  success: boolean;
+  provider: SearchTestProvider;
+  message: string;
+  resultCount: number;
+  errorCode?: string | null;
+  retryable: boolean;
+  latencyMs?: number | null;
+}
+
 export interface DiscoverLLMChannelModelsRequest {
   name: string;
   protocol: string;

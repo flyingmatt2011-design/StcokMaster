@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/ZhuLinsen/daily_stock_analysis",
+  "branch": "main",
+  "commit": "3b98aa1d779a3525660b5bd95a2b297278808464",
+  "auditedAt": "2026-08-11",
+  "protectedRoots": ["src", "data_provider", "strategies", "api", "templates"]
+}

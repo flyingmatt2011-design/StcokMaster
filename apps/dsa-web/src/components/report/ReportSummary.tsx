@@ -1,7 +1,6 @@
 import React from 'react';
 import type { AnalysisResult, AnalysisReport } from '../../types/analysis';
 import { ReportOverview } from './ReportOverview';
-import { ReportStrategy } from './ReportStrategy';
 import { ReportNews } from './ReportNews';
 import { ReportDetails } from './ReportDetails';
 import { ReportDiagnostics } from './ReportDiagnostics';
@@ -12,13 +11,6 @@ import { getReportText, normalizeReportLanguage } from '../../utils/reportLangua
 interface ReportSummaryProps {
   data: AnalysisResult | AnalysisReport;
   isHistory?: boolean;
-  /** 自选相关 */
-  watchlist?: {
-    isInWatchlist: (code: string) => boolean;
-    onToggle: (code: string) => void;
-    isActioning: boolean;
-    actionMessage: string | null;
-  };
   onOpenRunFlow?: (recordId: number) => void;
 }
 
@@ -29,7 +21,6 @@ interface ReportSummaryProps {
 export const ReportSummary: React.FC<ReportSummaryProps> = ({
   data,
   isHistory = false,
-  watchlist,
   onOpenRunFlow,
 }) => {
   // 兼容 AnalysisResult 和 AnalysisReport 两种数据格式
@@ -63,16 +54,11 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
       <ReportOverview
         meta={meta}
         summary={summary}
+        strategy={strategy}
         details={details}
         isHistory={isHistory}
-        watchlist={watchlist}
+        newsPanel={<ReportNews recordId={recordId} limit={8} language={reportLanguage} />}
       />
-
-      {/* 策略点位区 */}
-      <ReportStrategy strategy={strategy} language={reportLanguage} />
-
-      {/* 资讯区 */}
-      <ReportNews recordId={recordId} limit={8} language={reportLanguage} />
 
       {/* 输入数据块低敏摘要 */}
       <AnalysisContextSummary

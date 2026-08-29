@@ -79,6 +79,47 @@ def _make_tencent_payload(
     return f'v_sh601006="{"~".join(fields)}";'
 
 
+def test_concept_rankings_use_fast_ths_source(monkeypatch):
+    fetcher = object.__new__(AkshareFetcher)
+    fetcher._set_random_user_agent = lambda: None
+    fetcher._enforce_rate_limit = lambda: None
+    fake_akshare = SimpleNamespace(
+        stock_board_concept_name_em=lambda: (_ for _ in ()).throw(RuntimeError("EM unavailable")),
+        stock_fund_flow_concept=lambda symbol="即时": pd.DataFrame(
+            {
+                "行业": ["机器人", "白酒", "算力"],
+                "行业-涨跌幅": [3.2, -2.1, 1.5],
+            }
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "akshare", fake_akshare)
+
+    top, bottom = fetcher.get_concept_rankings(1)
+
+    assert top == [{"name": "机器人", "change_pct": 3.2, "source": "ths"}]
+    assert bottom == [{"name": "白酒", "change_pct": -2.1, "source": "ths"}]
+
+
+def test_sector_rankings_use_fast_sina_source(monkeypatch):
+    fetcher = object.__new__(AkshareFetcher)
+    fetcher._set_random_user_agent = lambda: None
+    fetcher._enforce_rate_limit = lambda: None
+    fake_akshare = SimpleNamespace(
+        stock_sector_spot=lambda indicator="行业": pd.DataFrame(
+            {"板块": ["有色", "医药"], "涨跌幅": [2.5, -1.2]}
+        ),
+        stock_board_industry_name_em=lambda: (_ for _ in ()).throw(
+            AssertionError("Eastmoney should not be called after Sina succeeds")
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "akshare", fake_akshare)
+
+    top, bottom = fetcher.get_sector_rankings(1)
+
+    assert top == [{"name": "有色", "change_pct": 2.5}]
+    assert bottom == [{"name": "医药", "change_pct": -1.2}]
+
+
 @pytest.fixture
 def akshare_fetcher(monkeypatch):
     fetcher = AkshareFetcher()

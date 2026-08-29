@@ -95,26 +95,26 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({
   const arcLength = circumference * 0.75;
   const progress = (animatedScore / 100) * arcLength;
 
-  // Sentiment colors - dynamically computed based on score thresholds.
-  // Light theme uses a restrained glow; dark theme keeps the stronger terminal-style glow.
+  // Keep the score gauge in the product accent. Price movement keeps the
+  // market-specific red/green semantics elsewhere in the interface.
   const sentimentConfig = {
     greed: {
-      color: '#00d4ff',       // Cyan
-      glowFilter: 'rgba(0, 212, 255, 0.66)',
-      lightColor: '#22d3ee',  // Lighter cyan
-      lightEndColor: '#0891b2', // Darker cyan
+      color: '#75a8cf',
+      glowFilter: 'rgba(43, 100, 143, 0.24)',
+      lightColor: '#5f91b8',
+      lightEndColor: '#2b648f',
     },
     neutral: {
-      color: '#a855f7',       // Purple
-      glowFilter: 'rgba(168, 85, 247, 0.66)',
-      lightColor: '#c084fc',  // Lighter purple
-      lightEndColor: '#9333ea', // Darker purple
+      color: '#75a8cf',
+      glowFilter: 'rgba(43, 100, 143, 0.24)',
+      lightColor: '#5f91b8',
+      lightEndColor: '#2b648f',
     },
     fear: {
-      color: '#ff4466',       // Red
-      glowFilter: 'rgba(255, 68, 102, 0.66)',
-      lightColor: '#fb7185',  // Lighter rose
-      lightEndColor: '#e11d48', // Darker rose
+      color: '#75a8cf',
+      glowFilter: 'rgba(43, 100, 143, 0.24)',
+      lightColor: '#5f91b8',
+      lightEndColor: '#2b648f',
     },
   };
 
@@ -128,21 +128,11 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({
   const sentimentKey = getSentimentKey(animatedScore);
   const colors = sentimentConfig[sentimentKey];
   const uniqueId = `${sentimentKey}-${score}-${animatedScore.toFixed(0)}`;
-  const gaugeTheme: GaugeVisualStyle = isDark
-    ? {
-        svgFilter: `drop-shadow(0 0 12px ${colors.glowFilter})`,
-        glowBlur: 4,
-        glowOpacity: 0.3,
-        glowStrokeExtra: gap,
-        valueTextShadow: `0 0 30px ${colors.glowFilter}`,
-      }
-    : {
-        svgFilter: `drop-shadow(0 0 8px ${colors.glowFilter.replace('0.66', '0.28')})`,
-        glowBlur: 3.4,
-        glowOpacity: 0.26,
-        glowStrokeExtra: Math.max(3, gap * 0.55),
-        valueTextShadow: `0 0 16px ${colors.glowFilter.replace('0.66', '0.22')}`,
-      };
+  const gaugeTheme: GaugeVisualStyle = {
+    glowBlur: 2.4,
+    glowOpacity: isDark ? 0.18 : 0.12,
+    glowStrokeExtra: Math.max(2, gap * 0.35),
+  };
 
   return (
     <div className={cn('flex flex-col items-center', className)}>
@@ -190,7 +180,7 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({
             cy={width / 2}
             r={radius}
             fill="none"
-            stroke="rgba(255, 255, 255, 0.05)"
+            stroke="hsl(var(--border) / 0.48)"
             strokeWidth={stroke}
             strokeLinecap="round"
             strokeDasharray={`${arcLength} ${circumference}`}

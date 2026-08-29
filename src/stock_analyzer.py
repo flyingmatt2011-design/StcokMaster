@@ -26,6 +26,7 @@ import numpy as np
 
 from src.config import get_config
 from src.schemas.decision_scale import signal_key_for_score
+from src.services.chart_pattern_service import analyze_chart_patterns
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,10 @@ class TrendAnalysisResult:
     rsi_status: RSIStatus = RSIStatus.NEUTRAL
     rsi_signal: str = ""              # RSI 信号描述
 
+    # 确定性形态识别（上下文展示用，不参与 signal_score）
+    chart_patterns: List[Dict[str, Any]] = field(default_factory=list)
+    chart_pattern_summary: str = ""
+
     # 买入信号
     buy_signal: BuySignal = BuySignal.WAIT
     signal_score: int = 0            # 综合评分 0-100
@@ -166,6 +171,9 @@ class TrendAnalysisResult:
             'rsi_24': self.rsi_24,
             'rsi_status': self.rsi_status.value,
             'rsi_signal': self.rsi_signal,
+            'chart_patterns': self.chart_patterns,
+            'chart_pattern_summary': self.chart_pattern_summary,
+            'chart_patterns_score_included': False,
         }
 
 
@@ -257,7 +265,12 @@ class StockTrendAnalyzer:
         # 6. RSI 分析
         self._analyze_rsi(df, result)
 
-        # 7. 生成买入信号
+        # 7. 确定性形态识别：只进入上下文，不改既有评分与买卖信号
+        pattern_context = analyze_chart_patterns(df)
+        result.chart_patterns = list(pattern_context.get('patterns') or [])
+        result.chart_pattern_summary = str(pattern_context.get('summary') or '')
+
+        # 8. 生成买入信号（原评分逻辑保持不变）
         self._generate_signal(result)
 
         return result

@@ -10,7 +10,7 @@
 3. 定义异步任务队列相关模型
 """
 
-from typing import Optional, List, Any, Literal
+from typing import Optional, List, Any, Dict, Literal
 from enum import Enum
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
@@ -168,6 +168,18 @@ class MarketReviewAccepted(BaseModel):
     )
 
 
+class MarketDashboardSnapshotResponse(BaseModel):
+    """Lightweight dashboard snapshot that does not invoke news search or an LLM."""
+
+    payload: Dict[str, Any] = Field(..., description="首页大盘结构化行情快照")
+    refreshed_at: str = Field(..., description="本次行情刷新完成时间")
+    mode: Literal["market_data_only"] = Field(
+        "market_data_only",
+        description="固定为纯行情刷新模式",
+    )
+    uses_llm: Literal[False] = Field(False, description="固定为 false，不消耗模型 Token")
+
+
 class AnalysisResultResponse(BaseModel):
     """分析结果响应模型"""
     
@@ -320,6 +332,9 @@ class TaskStatus(BaseModel):
         None,
         description="大盘复盘任务实际执行的 canonical 市场范围",
     )
+    stage: Optional[str] = Field(None, description="稳定的任务阶段标识")
+    elapsed_seconds: Optional[int] = Field(None, ge=0, description="任务已运行秒数")
+    recovered: bool = Field(False, description="是否由上次异常中断恢复")
     error: Optional[str] = Field(
         None, 
         description="错误信息（仅在 failed 时存在）"

@@ -45,6 +45,7 @@ type StructuredMarketData = {
   id: string;
   title?: string;
   breadth?: MarketReviewPayload['breadth'];
+  marketContextIndicators?: MarketReviewPayload['marketContextIndicators'];
   indices: NonNullable<MarketReviewPayload['indices']>;
   sectors?: MarketReviewPayload['sectors'];
   concepts?: MarketReviewPayload['concepts'];
@@ -174,7 +175,13 @@ const hasRankingRows = (rankings?: MarketReviewPayload['sectors']): boolean =>
   Boolean(rankings?.top?.length || rankings?.bottom?.length);
 
 const hasStructuredMarketData = (payload?: MarketReviewPayload | null): boolean =>
-  Boolean(payload?.breadth || payload?.indices?.length || hasRankingRows(payload?.sectors) || hasRankingRows(payload?.concepts));
+  Boolean(
+    payload?.breadth
+    || payload?.indices?.length
+    || payload?.marketContextIndicators?.indicators
+    || hasRankingRows(payload?.sectors)
+    || hasRankingRows(payload?.concepts),
+  );
 
 const getStructuredMarketData = (payload?: MarketReviewPayload | null): StructuredMarketData[] => {
   if (!payload) {
@@ -188,6 +195,7 @@ const getStructuredMarketData = (payload?: MarketReviewPayload | null): Structur
         id: region,
         title: marketPayload.title || region.toUpperCase(),
         breadth: marketPayload.breadth,
+        marketContextIndicators: marketPayload.marketContextIndicators,
         indices: marketPayload.indices || [],
         sectors: marketPayload.sectors,
         concepts: marketPayload.concepts,
@@ -202,6 +210,7 @@ const getStructuredMarketData = (payload?: MarketReviewPayload | null): Structur
     id: payload.region || 'market',
     title: payload.title,
     breadth: payload.breadth,
+    marketContextIndicators: payload.marketContextIndicators,
     indices: payload.indices || [],
     sectors: payload.sectors,
     concepts: payload.concepts,
@@ -279,6 +288,12 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
   conceptBoards: string;
   leading: string;
   lagging: string;
+  marketRiskIndicators: string;
+  contextOnly: string;
+  buffettIndex: string;
+  equityBondSpread: string;
+  newHighLow: string;
+  qvix: string;
 }> = {
   zh: {
     reviewSummary: '复盘摘要',
@@ -302,6 +317,12 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     conceptBoards: '概念板块',
     leading: '领涨',
     lagging: '领跌',
+    marketRiskIndicators: '市场风险补充指标',
+    contextOnly: '仅作环境背景，不参与现有评分',
+    buffettIndex: '巴菲特指标',
+    equityBondSpread: '股债利差',
+    newHighLow: '创新高 / 创新低',
+    qvix: '50ETF QVIX',
   },
   en: {
     reviewSummary: 'Review Summary',
@@ -325,6 +346,12 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     conceptBoards: 'Concept Themes',
     leading: 'Leading',
     lagging: 'Lagging',
+    marketRiskIndicators: 'Supplemental Market Risk',
+    contextOnly: 'Context only; excluded from the existing score',
+    buffettIndex: 'Buffett Indicator',
+    equityBondSpread: 'Equity-Bond Spread',
+    newHighLow: 'New Highs / New Lows',
+    qvix: '50ETF QVIX',
   },
   ko: {
     reviewSummary: '리뷰 요약',
@@ -348,6 +375,12 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     conceptBoards: '테마 섹터',
     leading: '강세',
     lagging: '약세',
+    marketRiskIndicators: '시장 리스크 보조 지표',
+    contextOnly: '환경 참고용이며 기존 점수에 반영되지 않음',
+    buffettIndex: '버핏 지표',
+    equityBondSpread: '주식-채권 스프레드',
+    newHighLow: '신고가 / 신저가',
+    qvix: '50ETF QVIX',
   },
 };
 
@@ -616,6 +649,50 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                 ) : (
                   <p className="text-sm text-secondary-text">{marketReviewText.noBreadthData}</p>
                 )}
+                {marketData.marketContextIndicators?.indicators ? (() => {
+                  const indicators = marketData.marketContextIndicators?.indicators;
+                  const rows = [
+                    indicators?.buffettIndex?.value !== undefined ? {
+                      label: marketReviewText.buffettIndex,
+                      value: `${formatMarketNumber(indicators.buffettIndex.value)}${
+                        indicators.buffettIndex.percentile !== undefined
+                          ? ` · ${formatMarketPercent(indicators.buffettIndex.percentile)}`
+                          : ''
+                      }`,
+                    } : null,
+                    indicators?.equityBondSpread?.value !== undefined ? {
+                      label: marketReviewText.equityBondSpread,
+                      value: formatMarketNumber(indicators.equityBondSpread.value),
+                    } : null,
+                    indicators?.newHighLow ? {
+                      label: marketReviewText.newHighLow,
+                      value: `${formatMarketCount(indicators.newHighLow.newHigh)} / ${formatMarketCount(indicators.newHighLow.newLow)}`,
+                    } : null,
+                    indicators?.qvix?.value !== undefined ? {
+                      label: marketReviewText.qvix,
+                      value: formatMarketNumber(indicators.qvix.value),
+                    } : null,
+                  ].filter((row): row is { label: string; value: string } => row !== null);
+                  if (rows.length === 0) {
+                    return null;
+                  }
+                  return (
+                    <div className="rounded-lg border border-subtle p-3">
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                        <p className="label-uppercase">{marketReviewText.marketRiskIndicators}</p>
+                        <span className="text-xs text-secondary-text">{marketReviewText.contextOnly}</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                        {rows.map((row) => (
+                          <div key={row.label} className="rounded-md bg-subtle/40 px-3 py-2">
+                            <p className="text-xs text-secondary-text">{row.label}</p>
+                            <p className="mt-1 font-mono text-sm font-semibold text-foreground">{row.value}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })() : null}
                 {marketData.indices.length > 0 ? (
                   <div className="overflow-x-auto">
                     <table className="min-w-full text-sm">

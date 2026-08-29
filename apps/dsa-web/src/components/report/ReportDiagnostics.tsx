@@ -40,6 +40,8 @@ const TEXT = {
     unavailable: '运行诊断暂不可用',
     noComponents: '暂无组件诊断',
     components: '关键链路',
+    providerChains: '数据源降级链路',
+    attempts: '次尝试',
     advanced: '高级字段',
     copy: '复制排障信息',
     copied: '已复制',
@@ -70,6 +72,8 @@ const TEXT = {
     unavailable: 'Diagnostics unavailable',
     noComponents: 'No component diagnostics',
     components: 'Key Path',
+    providerChains: 'Provider fallback chains',
+    attempts: 'attempts',
     advanced: 'Advanced Fields',
     copy: 'Copy diagnostics',
     copied: 'Copied',
@@ -100,6 +104,8 @@ const TEXT = {
     unavailable: '실행 진단을 사용할 수 없음',
     noComponents: '컴포넌트 진단 없음',
     components: '핵심 경로',
+    providerChains: '데이터 소스 대체 경로',
+    attempts: '회 시도',
     advanced: '고급 필드',
     copy: '진단 정보 복사',
     copied: '복사됨',
@@ -252,6 +258,7 @@ export const ReportDiagnostics: React.FC<ReportDiagnosticsProps> = ({
   const statusStyle = OVERALL_STATUS_STYLE[visibleSummary.status] || OVERALL_STATUS_STYLE.unknown;
   const statusLabel = text.overall[visibleSummary.status] || visibleSummary.statusLabel;
   const components = getOrderedComponents(visibleSummary.components);
+  const providerChains = visibleSummary.providerChains || [];
   const traceId = compactId(visibleSummary.traceId);
   const taskId = compactId(visibleSummary.taskId);
   const queryId = compactId(visibleSummary.queryId);
@@ -270,6 +277,7 @@ export const ReportDiagnostics: React.FC<ReportDiagnosticsProps> = ({
       };
       return payload;
     }, {}),
+    providerChains,
   };
   const hasAdvancedPayload = Boolean(
     visibleSummary.traceId
@@ -331,7 +339,7 @@ export const ReportDiagnostics: React.FC<ReportDiagnosticsProps> = ({
         </summary>
 
         <div className="home-divider space-y-4 border-t px-4 pb-4 pt-3">
-          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div className="stockmaster-diagnostics-header flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div className="min-w-0 space-y-2">
               <p className="text-sm leading-6 text-foreground">
                 {visibleSummary.reason}
@@ -387,7 +395,7 @@ export const ReportDiagnostics: React.FC<ReportDiagnosticsProps> = ({
 
           <div>
             <span className="label-uppercase">{text.components}</span>
-            <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+            <div className="stockmaster-diagnostics-grid mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
               {components.length > 0 ? components.map((component) => {
                 const componentStyle = COMPONENT_STATUS_STYLE[component.status] || COMPONENT_STATUS_STYLE.unknown;
                 const componentLabel = text.component[component.status] || component.status;
@@ -416,6 +424,34 @@ export const ReportDiagnostics: React.FC<ReportDiagnosticsProps> = ({
               )}
             </div>
           </div>
+
+          {providerChains.length > 0 ? (
+            <div>
+              <span className="label-uppercase">{text.providerChains}</span>
+              <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                {providerChains.map((chain) => {
+                  const chainStyle = COMPONENT_STATUS_STYLE[chain.status];
+                  return (
+                    <div key={chain.dataType} className="home-subpanel p-3" data-testid={`provider-chain-${chain.dataType}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-foreground">{chain.label}</p>
+                          <p className="mt-1 text-xs leading-5 text-secondary-text">{chain.message}</p>
+                          <p className="mt-1 text-[11px] text-muted-text">
+                            {chain.attempts} {text.attempts} · {chain.totalLatencyMs} ms · {chain.providers.join(' → ')}
+                          </p>
+                        </div>
+                        <Badge variant={chainStyle.variant} className="shrink-0 gap-1.5 shadow-none">
+                          <StatusDot tone={chainStyle.tone} className="h-1.5 w-1.5" />
+                          {text.component[chain.status]}
+                        </Badge>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
 
           {hasAdvancedPayload ? (
             <details className="home-subpanel group/advanced p-3">

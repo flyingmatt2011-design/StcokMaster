@@ -12,7 +12,7 @@ A股自选股智能分析系统 - 核心分析流水线
 """
 
 import logging
-import inspect
+import os
 import threading
 import time
 import uuid
@@ -27,7 +27,7 @@ import pandas as pd
 from src.config import FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT, get_config, Config
 from src.storage import get_db
 from data_provider import DataFetcherManager
-from data_provider.base import is_bse_code, normalize_stock_code
+from data_provider.base import normalize_stock_code
 from data_provider.realtime_types import ChipDistribution
 from src.analyzer import (
     GeminiAnalyzer,
@@ -73,6 +73,7 @@ from src.services.analysis_context_builder import (
     AnalysisContextBuilder,
     PipelineAnalysisArtifacts,
 )
+from src.services.analysis_retry_context import prepared_analysis_retry_cache
 from src.services.intel_context_status import (
     IntelCoverageSummary,
     format_intel_coverage_note,
@@ -96,6 +97,11 @@ from src.services.decision_signal_extractor import (
 )
 from src.services.decision_signal_summary import summarize_decision_signal
 from src.enums import ReportType
+from src.core.pipeline_helpers import (
+    _share_image_payload,
+    _supports_explicit_keyword,
+    _symbol_scope_lookup_values,
+)
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from src.core.trading_calendar import (
     build_market_phase_context,
@@ -110,28 +116,42 @@ from bot.models import BotMessage
 
 logger = logging.getLogger(__name__)
 
-
-def _share_image_payload(result: Any) -> Optional[Dict[str, Any]]:
-    """Return structured poster data when the result exposes the real contract."""
-
-    to_dict = getattr(result, "to_dict", None)
-    if not callable(to_dict):
-        return None
-    try:
-        payload = to_dict()
-    except Exception as exc:
-        logger.debug("构建分享图片结构化数据失败，回退 Markdown: %s", exc)
-        return None
-    return payload if isinstance(payload, dict) and payload else None
+_shared_fetcher_manager: Optional[DataFetcherManager] = None
+_shared_fetcher_manager_lock = threading.Lock()
+_shared_daily_market_context_service: Optional[DailyMarketContextService] = None
+_shared_daily_market_context_service_lock = threading.Lock()
 
 
-def _supports_explicit_keyword(callable_obj: Any, keyword: str) -> bool:
-    """Avoid breaking custom notifier overrides that predate an optional kwarg."""
+def _shared_runtime_cache_enabled() -> bool:
+    return os.getenv("STOCKMASTER_SHARED_FETCHER_CACHE", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
-    try:
-        return keyword in inspect.signature(callable_obj).parameters
-    except (TypeError, ValueError):
-        return False
+
+def _get_runtime_fetcher_manager() -> DataFetcherManager:
+    """Reuse thread-safe provider caches in desktop mode without changing fetch order."""
+    if not _shared_runtime_cache_enabled():
+        return DataFetcherManager()
+    global _shared_fetcher_manager
+    if _shared_fetcher_manager is None:
+        with _shared_fetcher_manager_lock:
+            if _shared_fetcher_manager is None:
+                _shared_fetcher_manager = DataFetcherManager()
+    return _shared_fetcher_manager
+
+
+def _get_runtime_daily_market_context_service(db_manager: Any) -> DailyMarketContextService:
+    """Share the persisted daily context cache between desktop analysis tasks."""
+    if not _shared_runtime_cache_enabled():
+        return DailyMarketContextService(db_manager=db_manager)
+    global _shared_daily_market_context_service
+    if _shared_daily_market_context_service is None:
+        with _shared_daily_market_context_service_lock:
+            if _shared_daily_market_context_service is None:
+                _shared_daily_market_context_service = DailyMarketContextService(
+                    db_manager=db_manager,
+                )
+    return _shared_daily_market_context_service
 
 
 # 防御性 guard：当实例绕过 __init__（如测试中 __new__）构造时，
@@ -140,69 +160,6 @@ _SINGLE_STOCK_NOTIFY_LOCK_INIT_GUARD = threading.Lock()
 _DAILY_MARKET_CONTEXT_SERVICE_LOCK_INIT_GUARD = threading.Lock()
 
 
-def _symbol_scope_lookup_values(code: str, market: str) -> List[str]:
-    """Return accepted persisted-intelligence symbol spellings for lookup."""
-    raw = str(code or "").strip()
-    normalized = normalize_stock_code(raw) if raw else ""
-    values: List[str] = []
-    seen: set[str] = set()
-
-    def add(value: str) -> None:
-        text = str(value or "").strip()
-        if text and text not in seen:
-            seen.add(text)
-            values.append(text)
-
-    def add_case_variants(value: str) -> None:
-        text = str(value or "").strip()
-        if not text:
-            return
-        add(text)
-        add(text.upper())
-        add(text.lower())
-
-    add_case_variants(normalized)
-    add_case_variants(raw)
-
-    normalized_upper = normalized.upper()
-    if normalized_upper.startswith("HK") and normalized_upper[2:].isdigit():
-        digits = normalized_upper[2:]
-        trimmed_digits = digits.lstrip("0") or digits
-        add_case_variants(normalized_upper)
-        add_case_variants(digits)
-        add_case_variants(trimmed_digits)
-        add_case_variants(f"HK{trimmed_digits}")
-        add_case_variants(f"{trimmed_digits}.HK")
-        add_case_variants(f"{digits}.HK")
-        return values
-
-    if (market or "").strip().lower() != "cn":
-        return values
-    if not (normalized.isdigit() and len(normalized) == 6):
-        return values
-
-    raw_upper = raw.upper()
-    exchange = ""
-    if raw_upper.startswith(("SH", "SS")) or raw_upper.endswith((".SH", ".SS")):
-        exchange = "SH"
-    elif raw_upper.startswith("SZ") or raw_upper.endswith(".SZ"):
-        exchange = "SZ"
-    elif raw_upper.startswith("BJ") or raw_upper.endswith(".BJ"):
-        exchange = "BJ"
-    elif is_bse_code(normalized):
-        exchange = "BJ"
-    elif normalized.startswith(("5", "6", "9")):
-        exchange = "SH"
-    else:
-        exchange = "SZ"
-
-    add_case_variants(f"{exchange}{normalized}")
-    add_case_variants(f"{exchange}.{normalized}")
-    add_case_variants(f"{normalized}.{exchange}")
-    if exchange == "SH":
-        add_case_variants(f"SS.{normalized}")
-        add_case_variants(f"{normalized}.SS")
-    return values
 
 
 class StockAnalysisPipeline:
@@ -260,7 +217,7 @@ class StockAnalysisPipeline:
         
         # 初始化各模块
         self.db = get_db()
-        self.fetcher_manager = DataFetcherManager()
+        self.fetcher_manager = _get_runtime_fetcher_manager()
         # 不再单独创建 akshare_fetcher，统一使用 fetcher_manager 获取增强数据
         self.trend_analyzer = StockTrendAnalyzer()  # 技术分析器
         self.analyzer = GeminiAnalyzer(config=self.config, skills=self.analysis_skills)
@@ -409,7 +366,7 @@ class StockAnalysisPipeline:
             error_msg = f"获取/保存数据失败: {str(e)}"
             logger.error(f"{stock_name}({code}) {error_msg}")
             return False, error_msg
-    
+
     def _fetch_intelligence_sources(
         self,
         *,
@@ -626,6 +583,7 @@ class StockAnalysisPipeline:
                         'fundamental_stage_timeout_seconds',
                         FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT,
                     ),
+                    realtime_quote=realtime_quote,
                 )
             except Exception as e:
                 logger.warning(f"{stock_name}({code}) 基本面聚合失败: {e}")
@@ -888,167 +846,220 @@ class StockAnalysisPipeline:
                 code=code,
                 query_id=query_id,
             )
-            llm_progress_state = {"last_progress": 64}
-
-            def _on_llm_stream(chars_received: int) -> None:
-                dynamic_progress = min(92, 64 + min(chars_received // 80, 28))
-                if dynamic_progress <= llm_progress_state["last_progress"]:
-                    return
-                llm_progress_state["last_progress"] = dynamic_progress
-                self._emit_progress(
-                    dynamic_progress,
-                    f"{stock_name}：LLM 正在生成分析结果（已接收 {chars_received} 字符）",
-                )
-
-            self._emit_progress(64, f"{stock_name}：正在请求 LLM 生成报告")
-            llm_started_at = time.monotonic()
+            prepared_context = {
+                "code": code,
+                "stock_name": stock_name,
+                "enhanced_context": enhanced_context,
+                "news_context": news_context,
+                "news_result_count": news_result_count,
+                "analysis_context_pack_summary": analysis_context_pack_summary,
+                "analysis_context_pack_overview": analysis_context_pack_overview,
+                "realtime_quote": realtime_quote,
+                "chip_data": chip_data,
+                "trend_result": trend_result,
+                "fundamental_context": fundamental_context,
+                "market_structure_context": market_structure_context,
+                "market_phase_summary": market_phase_summary,
+                "portfolio_context": portfolio_context,
+            }
             try:
-                record_llm_run_started(
-                    model=getattr(self.config, "litellm_model", None),
-                    call_type="analysis",
+                result = self._generate_and_finalize_prepared_analysis(
+                    query_id=query_id,
+                    report_type=report_type,
+                    **prepared_context,
                 )
-                result = self.analyzer.analyze(
-                    enhanced_context,
-                    news_context=news_context,
-                    progress_callback=self._emit_progress,
-                    stream_progress_callback=_on_llm_stream,
-                    analysis_context_pack_summary=analysis_context_pack_summary,
-                )
-                llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
-                record_llm_run(
-                    success=bool(result and getattr(result, "success", True)),
-                    model=getattr(result, "model_used", None) if result else None,
-                    call_type="analysis",
-                    duration_ms=llm_duration_ms,
-                    error_type=(
-                        None
-                        if result and getattr(result, "success", True)
-                        else "AnalysisResultError"
-                    ),
-                    error_message=(
-                        getattr(result, "error_message", None)
-                        if result and not getattr(result, "success", True)
-                        else ("LLM returned empty result" if result is None else None)
-                    ),
-                )
-            except Exception as exc:
-                record_llm_run(
-                    success=False,
-                    model=getattr(self.config, "litellm_model", None),
-                    call_type="analysis",
-                    duration_ms=int((time.monotonic() - llm_started_at) * 1000),
-                    error_type=type(exc).__name__,
-                    error_message=exc,
-                )
+            except Exception:
+                prepared_analysis_retry_cache.put(code, prepared_context)
                 raise
-
-            # Step 7.5: 填充分析时的价格信息到 result
-            if result:
-                self._emit_progress(94, f"{stock_name}：正在校验并整理分析结果")
-                result.query_id = query_id
-                realtime_data = enhanced_context.get('realtime', {})
-                result.current_price = realtime_data.get('price')
-                result.change_pct = realtime_data.get('change_pct')
-
-            # Step 7.6: chip_structure fallback (Issue #589) and unavailable collapse
-            if result:
-                normalize_chip_structure_availability(result, chip_data)
-
-            # Step 7.7: price_position fallback
-            if result:
-                fill_price_position_if_needed(result, trend_result, realtime_quote)
-                action_source_advice = getattr(result, "operation_advice", None)
-                stabilize_decision_with_structure(result, trend_result, fundamental_context)
-                adjustments = apply_phase_decision_guardrails(
-                    result,
-                    market_phase_summary=market_phase_summary,
-                    analysis_context_pack_overview=analysis_context_pack_overview,
-                    report_language=getattr(result, "report_language", None)
-                    or getattr(self.config, "report_language", "zh"),
-                )
-                if adjustments:
-                    logger.info("[phase_decision_guardrail] Applied adjustments for %s: %s", code, adjustments)
-                market_context_adjustments = apply_daily_market_context_guardrail(
-                    result,
-                    daily_market_context=enhanced_context.get("daily_market_context"),
-                    report_language=getattr(result, "report_language", None)
-                    or getattr(self.config, "report_language", "zh"),
-                )
-                if market_context_adjustments:
-                    logger.info(
-                        "[daily_market_context_guardrail] Applied adjustments for %s: %s",
-                        code,
-                        market_context_adjustments,
-                    )
-                if isinstance(fundamental_context, dict):
-                    result.fundamental_context = fundamental_context
-                if isinstance(market_structure_context, dict):
-                    result.market_structure_context = market_structure_context
-                result.market_phase_summary = market_phase_summary
-                result.analysis_context_pack_overview = analysis_context_pack_overview
-                self._refresh_decision_action_for_final_result(
-                    result,
-                    report_type=report_type.value,
-                    previous_operation_advice=action_source_advice,
-                )
-
-            # Step 8: 保存分析历史记录
-            if result and result.success:
-                try:
-                    self._emit_progress(97, f"{stock_name}：正在保存分析报告")
-                    context_snapshot = self._build_context_snapshot(
-                        enhanced_context=enhanced_context,
-                        news_content=news_context,
-                        news_result_count=news_result_count,
-                        realtime_quote=realtime_quote,
-                        chip_data=chip_data,
-                        analysis_context_pack_overview=analysis_context_pack_overview,
-                        market_phase_summary=market_phase_summary,
-                    )
-                    result.diagnostic_context_snapshot = context_snapshot
-                    saved_history_id = self.db.save_analysis_history(
-                        result=result,
-                        query_id=query_id,
-                        report_type=report_type.value,
-                        news_content=news_context,
-                        context_snapshot=context_snapshot,
-                        save_snapshot=self.save_context_snapshot
-                    )
-                    valid_saved_history_id = (
-                        isinstance(saved_history_id, int)
-                        and not isinstance(saved_history_id, bool)
-                        and saved_history_id > 0
-                    )
-                    record_history_run(
-                        report_saved=bool(saved_history_id),
-                        metadata_saved=bool(saved_history_id),
-                        analysis_history_id=(
-                            saved_history_id if valid_saved_history_id else None
-                        ),
-                    )
-                    if valid_saved_history_id:
-                        self._extract_decision_signal_after_history_save(
-                            result=result,
-                            query_id=query_id,
-                            source_report_id=saved_history_id,
-                            report_type=report_type.value,
-                            context_snapshot=context_snapshot,
-                            portfolio_context=portfolio_context,
-                        )
-                except Exception as e:
-                    record_history_run(
-                        report_saved=False,
-                        metadata_saved=False,
-                        error_message=e,
-                    )
-                    logger.warning(f"{stock_name}({code}) 保存分析历史失败: {e}")
-
+            if not result or not getattr(result, "success", True):
+                prepared_analysis_retry_cache.put(code, prepared_context)
             return result
 
         except Exception as e:
             logger.error(f"{stock_name}({code}) 分析失败: {e}")
             logger.exception(f"{stock_name}({code}) 详细错误信息:")
             return None
+
+    def _generate_and_finalize_prepared_analysis(
+        self,
+        *,
+        code: str,
+        stock_name: str,
+        query_id: str,
+        report_type: ReportType,
+        enhanced_context: Dict[str, Any],
+        news_context: str,
+        news_result_count: Optional[int],
+        analysis_context_pack_summary: Any,
+        analysis_context_pack_overview: Any,
+        realtime_quote: Any,
+        chip_data: Any,
+        trend_result: Any,
+        fundamental_context: Any,
+        market_structure_context: Any,
+        market_phase_summary: Any,
+        portfolio_context: Any,
+    ) -> Optional[AnalysisResult]:
+        """Run only the LLM and finalization stages from an already prepared context."""
+
+        llm_progress_state = {"last_progress": 64}
+
+        def _on_llm_stream(chars_received: int) -> None:
+            dynamic_progress = min(92, 64 + min(chars_received // 80, 28))
+            if dynamic_progress <= llm_progress_state["last_progress"]:
+                return
+            llm_progress_state["last_progress"] = dynamic_progress
+            self._emit_progress(
+                dynamic_progress,
+                f"{stock_name}：LLM 正在生成分析结果（已接收 {chars_received} 字符）",
+            )
+
+        self._emit_progress(64, f"{stock_name}：正在请求 LLM 生成报告")
+        llm_started_at = time.monotonic()
+        try:
+            record_llm_run_started(
+                model=getattr(self.config, "litellm_model", None),
+                call_type="analysis",
+            )
+            result = self.analyzer.analyze(
+                enhanced_context,
+                news_context=news_context,
+                progress_callback=self._emit_progress,
+                stream_progress_callback=_on_llm_stream,
+                analysis_context_pack_summary=analysis_context_pack_summary,
+            )
+            llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
+            record_llm_run(
+                success=bool(result and getattr(result, "success", True)),
+                model=getattr(result, "model_used", None) if result else None,
+                call_type="analysis",
+                duration_ms=llm_duration_ms,
+                error_type=(
+                    None
+                    if result and getattr(result, "success", True)
+                    else "AnalysisResultError"
+                ),
+                error_message=(
+                    getattr(result, "error_message", None)
+                    if result and not getattr(result, "success", True)
+                    else ("LLM returned empty result" if result is None else None)
+                ),
+            )
+        except Exception as exc:
+            record_llm_run(
+                success=False,
+                model=getattr(self.config, "litellm_model", None),
+                call_type="analysis",
+                duration_ms=int((time.monotonic() - llm_started_at) * 1000),
+                error_type=type(exc).__name__,
+                error_message=exc,
+            )
+            raise
+
+        if result:
+            self._emit_progress(94, f"{stock_name}：正在校验并整理分析结果")
+            result.query_id = query_id
+            realtime_data = enhanced_context.get("realtime", {})
+            result.current_price = realtime_data.get("price")
+            result.change_pct = realtime_data.get("change_pct")
+            result.news_result_count = news_result_count
+            result.news_evidence_present = bool(
+                news_result_count is not None
+                and news_result_count > 0
+                and isinstance(news_context, str)
+                and news_context.strip()
+            )
+            normalize_chip_structure_availability(result, chip_data)
+            fill_price_position_if_needed(result, trend_result, realtime_quote)
+            action_source_advice = getattr(result, "operation_advice", None)
+            stabilize_decision_with_structure(result, trend_result, fundamental_context)
+            adjustments = apply_phase_decision_guardrails(
+                result,
+                market_phase_summary=market_phase_summary,
+                analysis_context_pack_overview=analysis_context_pack_overview,
+                report_language=getattr(result, "report_language", None)
+                or getattr(self.config, "report_language", "zh"),
+            )
+            if adjustments:
+                logger.info(
+                    "[phase_decision_guardrail] Applied adjustments for %s: %s",
+                    code,
+                    adjustments,
+                )
+            market_context_adjustments = apply_daily_market_context_guardrail(
+                result,
+                daily_market_context=enhanced_context.get("daily_market_context"),
+                report_language=getattr(result, "report_language", None)
+                or getattr(self.config, "report_language", "zh"),
+            )
+            if market_context_adjustments:
+                logger.info(
+                    "[daily_market_context_guardrail] Applied adjustments for %s: %s",
+                    code,
+                    market_context_adjustments,
+                )
+            if isinstance(fundamental_context, dict):
+                result.fundamental_context = fundamental_context
+            if isinstance(market_structure_context, dict):
+                result.market_structure_context = market_structure_context
+            result.market_phase_summary = market_phase_summary
+            result.analysis_context_pack_overview = analysis_context_pack_overview
+            self._refresh_decision_action_for_final_result(
+                result,
+                report_type=report_type.value,
+                previous_operation_advice=action_source_advice,
+            )
+
+        if result and result.success:
+            try:
+                self._emit_progress(97, f"{stock_name}：正在保存分析报告")
+                context_snapshot = self._build_context_snapshot(
+                    enhanced_context=enhanced_context,
+                    news_content=news_context,
+                    news_result_count=news_result_count,
+                    realtime_quote=realtime_quote,
+                    chip_data=chip_data,
+                    analysis_context_pack_overview=analysis_context_pack_overview,
+                    market_phase_summary=market_phase_summary,
+                )
+                result.diagnostic_context_snapshot = context_snapshot
+                saved_history_id = self.db.save_analysis_history(
+                    result=result,
+                    query_id=query_id,
+                    report_type=report_type.value,
+                    news_content=news_context,
+                    context_snapshot=context_snapshot,
+                    save_snapshot=self.save_context_snapshot,
+                )
+                valid_saved_history_id = (
+                    isinstance(saved_history_id, int)
+                    and not isinstance(saved_history_id, bool)
+                    and saved_history_id > 0
+                )
+                record_history_run(
+                    report_saved=bool(saved_history_id),
+                    metadata_saved=bool(saved_history_id),
+                    analysis_history_id=(saved_history_id if valid_saved_history_id else None),
+                )
+                if valid_saved_history_id:
+                    self._extract_decision_signal_after_history_save(
+                        result=result,
+                        query_id=query_id,
+                        source_report_id=saved_history_id,
+                        report_type=report_type.value,
+                        context_snapshot=context_snapshot,
+                        portfolio_context=portfolio_context,
+                    )
+            except Exception as exc:
+                record_history_run(
+                    report_saved=False,
+                    metadata_saved=False,
+                    error_message=exc,
+                )
+                logger.warning(f"{stock_name}({code}) 保存分析历史失败: {exc}")
+            prepared_analysis_retry_cache.delete(code)
+
+        return result
     
     def _enhance_context(
         self,
@@ -1145,11 +1156,30 @@ class StockAnalysisPipeline:
                 'signal_score': trend_result.signal_score,
                 'signal_reasons': trend_result.signal_reasons,
                 'risk_factors': trend_result.risk_factors,
+                'chart_patterns': getattr(trend_result, 'chart_patterns', []),
+                'chart_pattern_summary': getattr(trend_result, 'chart_pattern_summary', ''),
+                'chart_patterns_score_included': False,
             }
 
         # Issue #234：盘中分析使用实时 OHLC 与趋势 MA 覆盖 today。
         # 防护条件：trend_result.ma5 > 0 表示 MA 计算已成功且数据量充足。
-        if realtime_quote and trend_result and trend_result.ma5 > 0:
+        # Realtime providers commonly return the last completed trading-day
+        # snapshot on weekends and holidays. Do not relabel that snapshot as
+        # a new calendar-day bar after the phase resolver says non-trading.
+        non_trading_session = bool(
+            isinstance(market_phase_context, dict)
+            and (
+                market_phase_context.get("is_trading_day") is False
+                or str(market_phase_context.get("phase") or "").strip().lower()
+                == "non_trading"
+            )
+        )
+        if (
+            realtime_quote
+            and trend_result
+            and trend_result.ma5 > 0
+            and not non_trading_session
+        ):
             price = getattr(realtime_quote, 'price', None)
             if price is not None and price > 0:
                 yesterday_close = None
@@ -1159,6 +1189,27 @@ class StockAnalysisPipeline:
                 market_today = get_market_now(
                     get_market_for_stock(normalize_stock_code(enhanced.get('code', '')))
                 ).date().isoformat()
+                # The DB context names its latest stored trading bar ``today``.
+                # During an intraday realtime overlay that bar is actually the
+                # previous trading day. Preserve it before replacing ``today``
+                # so comparisons do not silently skip one trading session.
+                orig_today_date = str(orig_today.get('date') or '').strip()
+                current_yesterday = enhanced.get('yesterday')
+                current_yesterday_date = (
+                    str(current_yesterday.get('date') or '').strip()
+                    if isinstance(current_yesterday, dict)
+                    else ''
+                )
+                if (
+                    orig_today_date
+                    and orig_today_date < market_today
+                    and (
+                        not current_yesterday_date
+                        or current_yesterday_date < orig_today_date
+                    )
+                ):
+                    enhanced['yesterday'] = dict(orig_today)
+                    yesterday_close = orig_today.get('close')
                 source = getattr(realtime_quote, 'source', None)
                 source_name = getattr(source, 'value', source)
                 source_name = str(source_name) if source_name is not None else 'unknown'
@@ -2009,7 +2060,7 @@ class StockAnalysisPipeline:
                 with service_lock:
                     service = getattr(self, "_daily_market_context_service", None)
                     if service is None:
-                        service = DailyMarketContextService(db_manager=self.db)
+                        service = _get_runtime_daily_market_context_service(self.db)
                         self._daily_market_context_service = service
             get_context_kwargs = {
                 "region": market,
@@ -2999,6 +3050,20 @@ class StockAnalysisPipeline:
                     if isinstance(news_coverage, dict)
                     else {}
                 ),
+                **(
+                    {
+                        "chip_fetch_failed": True,
+                    }
+                    if (
+                        chip_data is None
+                        and bool(getattr(self.config, "enable_chip_distribution", True))
+                    )
+                    else (
+                        {"chip_not_supported": True}
+                        if chip_data is None
+                        else {}
+                    )
+                ),
             },
             portfolio_context=dict(portfolio_context) if isinstance(portfolio_context, dict) else None,
         )
@@ -3188,6 +3253,7 @@ class StockAnalysisPipeline:
         report_type: ReportType = ReportType.SIMPLE,
         analysis_query_id: Optional[str] = None,
         current_time: Optional[datetime] = None,
+        force_refresh: bool = False,
     ) -> Optional[AnalysisResult]:
         """
         处理单只股票的完整流程
@@ -3207,6 +3273,7 @@ class StockAnalysisPipeline:
             single_stock_notify: 是否启用单股推送模式（每分析完一只立即推送）
             report_type: 报告类型枚举（从配置读取，Issue #119）
             current_time: 本轮运行冻结的参考时间，用于统一断点续传目标交易日判断
+            force_refresh: 是否跳过日线断点续传缓存并重新获取数据
 
         Returns:
             AnalysisResult 或 None
@@ -3228,26 +3295,48 @@ class StockAnalysisPipeline:
             )
         try:
             self._emit_progress(12, f"{code}：正在准备分析任务")
-            # Step 1: 获取并保存数据
-            success, error = self.fetch_and_save_stock_data(
-                code, current_time=current_time
-            )
-            
-            if not success:
-                logger.warning(f"[{code}] 数据获取失败: {error}")
-                # 即使获取失败，也尝试用已有数据分析
-            else:
-                self._emit_progress(16, f"{code}：行情数据准备完成")
-            
-            # Step 2: AI 分析
             if skip_analysis:
+                success, error = self.fetch_and_save_stock_data(
+                    code,
+                    force_refresh=force_refresh,
+                    current_time=current_time,
+                )
+                if not success:
+                    logger.warning(f"[{code}] 数据获取失败: {error}")
                 logger.info(f"[{code}] 跳过 AI 分析（dry-run 模式）")
                 return None
-            
-            analyze_kwargs = {"query_id": effective_query_id}
-            if current_time is not None:
-                analyze_kwargs["current_time"] = current_time
-            result = self.analyze_stock(code, report_type, **analyze_kwargs)
+
+            prepared_context = prepared_analysis_retry_cache.get(code)
+            if prepared_context is not None:
+                logger.info(
+                    "[%s] 复用上次已准备的分析上下文，仅重试 LLM 与报告整理阶段",
+                    code,
+                )
+                self._emit_progress(20, f"{code}：复用已准备数据，仅重试 LLM")
+                result = self._generate_and_finalize_prepared_analysis(
+                    query_id=effective_query_id,
+                    report_type=report_type,
+                    **prepared_context,
+                )
+            else:
+                # Step 1: 获取并保存数据
+                success, error = self.fetch_and_save_stock_data(
+                    code,
+                    force_refresh=force_refresh,
+                    current_time=current_time,
+                )
+
+                if not success:
+                    logger.warning(f"[{code}] 数据获取失败: {error}")
+                    # 即使获取失败，也尝试用已有数据分析
+                else:
+                    self._emit_progress(16, f"{code}：行情数据准备完成")
+
+                # Step 2: AI 分析
+                analyze_kwargs = {"query_id": effective_query_id}
+                if current_time is not None:
+                    analyze_kwargs["current_time"] = current_time
+                result = self.analyze_stock(code, report_type, **analyze_kwargs)
             
             if result and result.success:
                 logger.info(
@@ -3342,6 +3431,24 @@ class StockAnalysisPipeline:
         # dry_run 仅做数据拉取，不需要名称预取，避免额外网络开销
         if not dry_run:
             self.fetcher_manager.prefetch_stock_names(stock_codes, use_bulk=False)
+            cn_codes = [
+                code for code in stock_codes
+                if get_market_for_stock(normalize_stock_code(code)) == "cn"
+            ]
+            if cn_codes and getattr(self.config, "enable_fundamental_pipeline", True):
+                try:
+                    self._emit_progress(6, "正在预取 A 股主力资金流")
+                    flow_count = self.fetcher_manager.prefetch_capital_flow_rankings()
+                    if isinstance(flow_count, int) and flow_count > 0:
+                        logger.info(
+                            "[prefetch] component=capital_flow action=complete "
+                            "provider=ths cached=%d stock_count=%d",
+                            flow_count,
+                            len(cn_codes),
+                        )
+                        self._emit_progress(9, f"主力资金流已缓存 {flow_count} 条")
+                except Exception as exc:
+                    logger.warning("A股资金流预取失败，将在个股阶段继续降级尝试: %s", exc)
 
         # 单股推送模式（#55）：从配置读取
         single_stock_notify = getattr(self.config, 'single_stock_notify', False)

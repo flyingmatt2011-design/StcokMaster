@@ -1,0 +1,8 @@
+{
+  "repository": "ZhuLinsen/daily_stock_analysis",
+  "branch": "main",
+  "eligibleRoots": ["src/", "data_provider/", "strategies/", "api/"],
+  "dependencyFiles": ["pyproject.toml", "requirements.txt", "requirements.lock", "poetry.lock"],
+  "uiRoots": ["apps/dsa-web/", "apps/dsa-desktop/"],
+  "protectedUserData": [".env", "data/", "logs/", "*.db"]
+}

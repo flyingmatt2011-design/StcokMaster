@@ -7,6 +7,7 @@ import type {
   AnalyzeAsyncResponse,
   AnalysisReport,
   MarketReviewAccepted,
+  MarketReviewPayload,
   MarketReviewRequest,
   TaskStatus,
   TaskListResponse,
@@ -122,6 +123,25 @@ export const analysisApi = {
     }
 
     return toCamelCase<MarketReviewAccepted>(response.data);
+  },
+
+  /** Refresh the home market cards without news search, persistence, or LLM usage. */
+  getMarketSnapshot: async (region = 'cn'): Promise<{
+    payload: MarketReviewPayload;
+    refreshedAt: string;
+    mode: 'market_data_only';
+    usesLlm: false;
+  }> => {
+    const response = await apiClient.get<Record<string, unknown>>(
+      '/api/v1/analysis/market-snapshot',
+      { params: { region } },
+    );
+    return toCamelCase(response.data) as {
+      payload: MarketReviewPayload;
+      refreshedAt: string;
+      mode: 'market_data_only';
+      usesLlm: false;
+    };
   },
 
   /**

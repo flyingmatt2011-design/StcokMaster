@@ -17,7 +17,7 @@ BaostockFetcher - 备用数据源 2 (Priority 3)
 import logging
 import re
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Generator
 
 import pandas as pd
@@ -36,7 +36,10 @@ from .base import (
     is_bse_code,
     normalize_stock_code,
     _is_hk_market,
+    _is_etf_code,
 )
+from .chip_distribution import calculate_chip_distribution
+from .realtime_types import ChipDistribution
 import os
 
 logger = logging.getLogger(__name__)
@@ -333,6 +336,95 @@ class BaostockFetcher(BaseFetcher):
             logger.warning(f"Baostock 获取股票名称失败 {stock_code}: {e}")
         
         return None
+
+    def get_chip_distribution(self, stock_code: str) -> Optional[ChipDistribution]:
+        """使用 BaoStock 日线和换手率在本地估算 A 股筹码分布。
+
+        该实现是 AKShare/东方财富筹码接口失败后的免费回退源。查询使用不复权价格，
+        避免复权造成历史成本价格失真；BaoStock 为 T+1 数据，因此结果日期通常为
+        最近一个已完成交易日。
+        """
+        normalized_code = normalize_stock_code(stock_code)
+        if (
+            _is_us_code(stock_code)
+            or _is_hk_market(stock_code)
+            or is_bse_code(stock_code)
+            or _is_etf_code(stock_code)
+        ):
+            return None
+
+        end_date = datetime.now().date()
+        start_date = end_date - timedelta(days=420)
+        try:
+            bs_code = self._convert_stock_code(normalized_code)
+            with self._baostock_session() as bs:
+                rs = bs.query_history_k_data_plus(
+                    code=bs_code,
+                    fields=(
+                        "date,open,high,low,close,volume,amount,turn,tradestatus"
+                    ),
+                    start_date=start_date.strftime("%Y-%m-%d"),
+                    end_date=end_date.strftime("%Y-%m-%d"),
+                    frequency="d",
+                    adjustflag="3",
+                )
+                if rs.error_code != "0":
+                    raise DataFetchError(f"Baostock 筹码基础数据查询失败: {rs.error_msg}")
+
+                rows = []
+                while rs.next():
+                    row = dict(zip(rs.fields, rs.get_row_data()))
+                    if str(row.get("tradestatus", "1")) != "1":
+                        continue
+                    rows.append(
+                        {
+                            "date": row.get("date", ""),
+                            "open": row.get("open"),
+                            "high": row.get("high"),
+                            "low": row.get("low"),
+                            "close": row.get("close"),
+                            "volume": row.get("volume"),
+                            "amount": row.get("amount"),
+                            "turnover": row.get("turn"),
+                        }
+                    )
+
+            rows.sort(key=lambda item: str(item.get("date") or ""))
+            metrics = calculate_chip_distribution(rows[-120:], bins=80)
+            if not metrics:
+                logger.warning(
+                    "[筹码分布] %s BaoStock 本地估算缺少有效日线或换手率",
+                    normalized_code,
+                )
+                return None
+
+            chip = ChipDistribution(
+                code=normalized_code,
+                date=metrics["date"],
+                source="baostock_local_cyq",
+                profit_ratio=metrics["profit_ratio"],
+                avg_cost=metrics["avg_cost"],
+                cost_90_low=metrics["cost_90_low"],
+                cost_90_high=metrics["cost_90_high"],
+                concentration_90=metrics["concentration_90"],
+                cost_70_low=metrics["cost_70_low"],
+                cost_70_high=metrics["cost_70_high"],
+                concentration_70=metrics["concentration_70"],
+            )
+            logger.info(
+                "[筹码分布] %s 使用 BaoStock 本地估算成功: 日期=%s, 样本=%s日, "
+                "换手覆盖=%.1f%%, 获利比例=%.1f%%, 平均成本=%.2f",
+                normalized_code,
+                chip.date,
+                metrics["days"],
+                metrics["turnover_coverage"] * 100,
+                chip.profit_ratio * 100,
+                chip.avg_cost,
+            )
+            return chip
+        except Exception as exc:
+            logger.warning("[筹码分布] %s BaoStock 本地估算失败: %s", normalized_code, exc)
+            return None
     
     def get_stock_list(self) -> Optional[pd.DataFrame]:
         """

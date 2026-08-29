@@ -50,6 +50,7 @@ from src.schemas.decision_action import (
 from src.schemas.decision_scale import extract_decision_guardrail_reason
 from src.utils.sniper_points import find_sniper_points
 from src.utils.data_processing import (
+    extract_stockmaster_display_fields,
     extract_realtime_detail_fields,
     normalize_model_used,
     parse_json_field,
@@ -334,6 +335,8 @@ class HistoryService:
             getattr(record, "context_snapshot", None),
         )
         action_fields = self._decision_action_fields_for_record(record, raw_result)
+        sniper_points = self._get_display_sniper_points(record, raw_result)
+        stockmaster_display = extract_stockmaster_display_fields(raw_result)
 
         return {
             "id": record.id,
@@ -350,6 +353,9 @@ class HistoryService:
             "operation_advice": record.operation_advice,
             "action": action_fields["action"],
             "action_label": action_fields["action_label"],
+            "ideal_buy": sniper_points.get("ideal_buy"),
+            "stop_loss": sniper_points.get("stop_loss"),
+            "bias_ma5": stockmaster_display.get("bias_ma5"),
             "model_used": normalize_model_used(model_used),
             "created_at": self._serialize_created_at(record.created_at),
             "market_phase_summary": market_phase_summary,
@@ -411,7 +417,7 @@ class HistoryService:
             logger.error(f"resolve_and_get_detail failed for {record_id}: {e}", exc_info=True)
             return None
 
-    def resolve_and_get_news(self, record_id: str, limit: int = 20) -> List[Dict[str, str]]:
+    def resolve_and_get_news(self, record_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         """
         Resolve record_id (int PK or query_id string) and return associated news.
 
@@ -427,7 +433,12 @@ class HistoryService:
             if not record:
                 logger.warning(f"resolve_and_get_news: record not found for {record_id}")
                 return []
-            return self.get_news_intel(query_id=record.query_id, limit=limit)
+            return self.get_news_intel(
+                query_id=record.query_id,
+                limit=limit,
+                analysis_created_at=record.created_at,
+                stock_code=record.code,
+            )
         except Exception as e:
             logger.error(f"resolve_and_get_news failed for {record_id}: {e}", exc_info=True)
             return []
@@ -648,7 +659,56 @@ class HistoryService:
         """
         return self.db.delete_analysis_history_records(record_ids)
 
-    def get_news_intel(self, query_id: str, limit: int = 20) -> List[Dict[str, str]]:
+    @staticmethod
+    def _news_record_publish_date(record: Any) -> Optional[date]:
+        value = getattr(record, "published_date", None)
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        return None
+
+    @classmethod
+    def _filter_report_news_records(
+        cls,
+        records: List[Any],
+        *,
+        analysis_created_at: datetime,
+        stock_code: Optional[str],
+        limit: int,
+    ) -> List[Any]:
+        """Keep only dated, recent news belonging to the displayed stock report."""
+        cfg = get_config()
+        window_days = resolve_news_window_days(
+            news_max_age_days=getattr(cfg, "news_max_age_days", 3),
+            news_strategy_profile=getattr(cfg, "news_strategy_profile", "short"),
+        )
+        anchor_date = analysis_created_at.date()
+        earliest_allowed = anchor_date - timedelta(days=max(0, window_days - 1))
+        latest_allowed = anchor_date + timedelta(days=1)
+        normalized_code = str(stock_code or "").strip()
+
+        filtered: List[Any] = []
+        for record in records:
+            record_code = str(getattr(record, "code", "") or "").strip()
+            if normalized_code and record_code != normalized_code:
+                continue
+            published = cls._news_record_publish_date(record)
+            if published is None or not (earliest_allowed <= published <= latest_allowed):
+                continue
+            filtered.append(record)
+            if len(filtered) >= limit:
+                break
+        return filtered
+
+    def get_news_intel(
+        self,
+        query_id: str,
+        limit: int = 20,
+        *,
+        analysis_created_at: Optional[datetime] = None,
+        stock_code: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Get news intelligence associated with a specified query_id.
 
@@ -660,20 +720,41 @@ class HistoryService:
             List of news intelligence (containing title, snippet, and url)
         """
         try:
-            records = self.db.get_news_intel_by_query_id(query_id=query_id, limit=limit)
+            candidate_limit = max(limit, min(500, limit * 10))
+            records = self.db.get_news_intel_by_query_id(
+                query_id=query_id,
+                limit=candidate_limit if analysis_created_at is not None else limit,
+            )
+
+            if records and analysis_created_at is not None:
+                records = self._filter_report_news_records(
+                    records,
+                    analysis_created_at=analysis_created_at,
+                    stock_code=stock_code,
+                    limit=limit,
+                )
 
             if not records:
-                records = self._fallback_news_by_analysis_context(query_id=query_id, limit=limit)
+                records = self._fallback_news_by_analysis_context(
+                    query_id=query_id,
+                    limit=limit,
+                    analysis_created_at=analysis_created_at,
+                    stock_code=stock_code,
+                )
 
             items: List[Dict[str, str]] = []
             for record in records:
                 snippet = (record.snippet or "").strip()
                 if len(snippet) > 200:
                     snippet = f"{snippet[:197]}..."
+                published = self._news_record_publish_date(record)
                 items.append({
                     "title": record.title,
                     "snippet": snippet,
                     "url": record.url,
+                    "source": (record.source or record.provider or "").strip(),
+                    "published_date": published.isoformat() if published is not None else None,
+                    "dimension": (record.dimension or "").strip() or None,
                 })
 
             return items
@@ -709,7 +790,14 @@ class HistoryService:
             logger.error(f"根据 record_id 查询新闻情报失败: {e}", exc_info=True)
             return []
 
-    def _fallback_news_by_analysis_context(self, query_id: str, limit: int) -> List[Any]:
+    def _fallback_news_by_analysis_context(
+        self,
+        query_id: str,
+        limit: int,
+        *,
+        analysis_created_at: Optional[datetime] = None,
+        stock_code: Optional[str] = None,
+    ) -> List[Any]:
         """
         Fallback by analysis context when direct query_id lookup returns no news.
 
@@ -717,20 +805,28 @@ class HistoryService:
         - URL-level dedup keeps one canonical news row across repeated analyses.
         - Legacy records may have different historical query_id strategies.
         """
-        records = self.db.get_analysis_history(query_id=query_id, limit=1)
-        if not records:
-            return []
-
-        analysis = records[0]
-        if not analysis.code or not analysis.created_at:
+        resolved_created_at = analysis_created_at
+        resolved_stock_code = str(stock_code or "").strip()
+        if resolved_created_at is None or not resolved_stock_code:
+            records = self.db.get_analysis_history(query_id=query_id, limit=1)
+            if not records:
+                return []
+            analysis = records[0]
+            resolved_created_at = analysis.created_at
+            resolved_stock_code = str(analysis.code or "").strip()
+        if resolved_created_at is None or not resolved_stock_code:
             return []
 
         # Narrow down to same-stock recent news, then filter by analysis time window.
-        days = max(1, (datetime.now() - analysis.created_at).days + 1)
-        candidates = self.db.get_recent_news(code=analysis.code, days=days, limit=max(limit * 5, 50))
+        days = max(1, (datetime.now() - resolved_created_at).days + 1)
+        candidates = self.db.get_recent_news(
+            code=resolved_stock_code,
+            days=days,
+            limit=max(limit * 5, 50),
+        )
 
-        start_time = analysis.created_at - timedelta(hours=6)
-        end_time = analysis.created_at + timedelta(hours=6)
+        start_time = resolved_created_at - timedelta(hours=6)
+        end_time = resolved_created_at + timedelta(hours=6)
         matched = [
             item for item in candidates
             if item.fetched_at and start_time <= item.fetched_at <= end_time
@@ -743,7 +839,7 @@ class HistoryService:
             news_strategy_profile=getattr(cfg, "news_strategy_profile", "short"),
         )
         # Anchor to analysis date instead of "today" to preserve historical context.
-        anchor_date = analysis.created_at.date()
+        anchor_date = resolved_created_at.date()
         latest_allowed = anchor_date + timedelta(days=1)
         earliest_allowed = anchor_date - timedelta(days=max(0, window_days - 1))
 

@@ -837,6 +837,7 @@ def _persist_market_review_history(
             region=region,
             report_language=report_language,
             diagnostic_snapshot=diagnostic_snapshot,
+            market_review_payload=market_review_payload,
         )
 
         db = DatabaseManager.get_instance()
@@ -883,11 +884,12 @@ def _build_market_review_context_overview(
     region: str,
     report_language: str,
     diagnostic_snapshot: Optional[Dict[str, Any]],
+    market_review_payload: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a low-sensitivity overview block for market-review run-flow rendering."""
     warnings: list[str] = []
     counts = {
-        "available": 1,
+        "available": 0,
         "missing": 0,
         "not_supported": 0,
         "fallback": 0,
@@ -910,6 +912,81 @@ def _build_market_review_context_overview(
         else "시황 리뷰" if report_language == "ko"
         else "大盘复盘"
     )
+    payload = market_review_payload if isinstance(market_review_payload, dict) else {}
+    nested_markets = payload.get("markets")
+    market_payloads = (
+        [item for item in nested_markets.values() if isinstance(item, dict)]
+        if isinstance(nested_markets, dict) and nested_markets
+        else [payload]
+    )
+    overview_blocks: list[Dict[str, Any]] = []
+    available_dimensions = 0
+    total_dimensions = 0
+
+    dimension_labels = {
+        "indices": "主要指数" if report_language != "en" else "Major indices",
+        "breadth": "市场广度" if report_language != "en" else "Market breadth",
+        "sectors": "行业板块" if report_language != "en" else "Sectors",
+        "concepts": "概念题材" if report_language != "en" else "Concept themes",
+        "news": "市场新闻" if report_language != "en" else "Market news",
+    }
+    for index, item in enumerate(market_payloads):
+        item_region = str(item.get("region") or region or "cn").strip().lower()
+        required = ["indices", "news"]
+        if item_region == "cn":
+            required.extend(["breadth", "sectors", "concepts"])
+        for dimension in required:
+            value = item.get(dimension)
+            if dimension in {"sectors", "concepts"} and isinstance(value, dict):
+                available = bool(value.get("top") or value.get("bottom"))
+            elif dimension == "breadth" and isinstance(value, dict):
+                available = any(
+                    value.get(key) not in (None, 0, 0.0, "")
+                    for key in ("up_count", "down_count", "flat_count", "total_amount")
+                )
+            else:
+                available = bool(value)
+
+            status = "available" if available else "missing"
+            counts[status] += 1
+            total_dimensions += 1
+            available_dimensions += int(available)
+            key = f"{item_region}_{dimension}" if len(market_payloads) > 1 else dimension
+            overview_blocks.append(
+                {
+                    "key": key,
+                    "label": dimension_labels[dimension],
+                    "status": status,
+                    "source": MARKET_REVIEW_REPORT_TYPE,
+                    "warnings": [],
+                    "missing_reasons": [] if available else [f"{dimension}_missing"],
+                }
+            )
+            if not available:
+                warnings.append(f"{key}_missing")
+
+    if not overview_blocks:
+        counts["missing"] = 1
+        total_dimensions = 1
+        overview_blocks.append(
+            {
+                "key": MARKET_REVIEW_REPORT_TYPE,
+                "label": label,
+                "status": "missing",
+                "source": MARKET_REVIEW_REPORT_TYPE,
+                "warnings": [],
+                "missing_reasons": ["market_review_payload_missing"],
+            }
+        )
+        warnings.append("market_review_payload_missing")
+
+    overall_score = int(round(available_dimensions / total_dimensions * 100)) if total_dimensions else 0
+    quality_level = (
+        "good" if overall_score >= 85
+        else "usable" if overall_score >= 65
+        else "limited" if overall_score >= 40
+        else "poor"
+    )
     return {
         "pack_version": "market_review/1.0",
         "created_at": datetime.now().isoformat(),
@@ -918,25 +995,16 @@ def _build_market_review_context_overview(
             "stock_name": label,
             "market": region,
         },
-        "blocks": [
-            {
-                "key": MARKET_REVIEW_REPORT_TYPE,
-                "label": label,
-                "status": "available",
-                "source": MARKET_REVIEW_REPORT_TYPE,
-                "warnings": warnings,
-                "missing_reasons": [],
-            }
-        ],
+        "blocks": overview_blocks,
         "counts": counts,
         "warnings": warnings,
         "metadata": metadata,
         "data_quality": {
-            "level": "good",
-            "overall_score": 100,
-            "available": 1,
-            "total": 1,
-            "missing": 0,
+            "level": quality_level,
+            "overall_score": overall_score,
+            "available": available_dimensions,
+            "total": total_dimensions,
+            "missing": total_dimensions - available_dimensions,
         },
     }
 

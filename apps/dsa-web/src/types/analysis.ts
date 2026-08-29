@@ -271,6 +271,20 @@ export interface MarketReviewBreadth {
   turnoverUnit?: string;
 }
 
+export interface MarketContextIndicators {
+  status?: 'ok' | 'partial' | 'failed' | 'not_supported' | string;
+  asOf?: string;
+  provider?: string;
+  scoreIncluded?: false;
+  indicators?: {
+    buffettIndex?: { value?: number; percentile?: number };
+    equityBondSpread?: { value?: number };
+    newHighLow?: { universe?: string; newHigh?: number; newLow?: number; ratio?: number };
+    qvix?: { value?: number };
+  };
+  errors?: string[];
+}
+
 export interface MarketReviewPayload {
   version?: number;
   kind?: 'market_review' | string;
@@ -282,6 +296,7 @@ export interface MarketReviewPayload {
   date?: string;
   marketScope?: string;
   marketLight?: Record<string, unknown>;
+  marketContextIndicators?: MarketContextIndicators;
   breadth?: MarketReviewBreadth;
   indices?: MarketReviewIndex[];
   sectors?: SectorRankings;
@@ -365,6 +380,28 @@ export interface ReportDetails {
   sectorRankings?: SectorRankings;
   conceptRankings?: SectorRankings;
   marketStructure?: MarketStructureContext | null;
+  valuationHistory?: {
+    periodYears?: number;
+    provider?: string;
+    metrics?: Record<string, {
+      current?: number;
+      percentile?: number;
+      min?: number;
+      max?: number;
+      median?: number;
+      sampleCount?: number;
+    }>;
+  } | null;
+  chartPatternContext?: {
+    patterns?: Array<Record<string, unknown> & { type?: string; label?: string; status?: string }>;
+    summary?: string;
+    scoreIncluded?: false;
+  } | null;
+  coreConclusion?: string | null;
+  riskAlerts?: string[];
+  positiveCatalysts?: string[];
+  supportLevel?: string | null;
+  resistanceLevel?: string | null;
 }
 
 /** Full analysis report */
@@ -395,6 +432,19 @@ export interface RunDiagnosticComponent {
   details?: Record<string, unknown>;
 }
 
+export interface ProviderChainSummary {
+  dataType: string;
+  label: string;
+  status: 'ok' | 'degraded' | 'failed';
+  message: string;
+  attempts: number;
+  providers: string[];
+  selectedProvider?: string | null;
+  totalLatencyMs: number;
+  recordCount?: number | null;
+  finalError?: string | null;
+}
+
 export interface RunDiagnosticSummary {
   traceId?: string;
   taskId?: string;
@@ -405,6 +455,7 @@ export interface RunDiagnosticSummary {
   statusLabel: string;
   reason: string;
   components: Record<string, RunDiagnosticComponent>;
+  providerChains?: ProviderChainSummary[];
   copyText: string;
 }
 
@@ -490,6 +541,9 @@ export interface TaskInfo {
   analysisPhase?: AnalysisPhase;
   skills?: string[];
   region?: string;
+  stage?: 'queued' | 'market_data' | 'indicators' | 'news' | 'llm' | 'report' | 'stopping' | 'completed' | 'failed' | 'cancelled' | string;
+  elapsedSeconds?: number;
+  recovered?: boolean;
 }
 
 /** Task list response */
@@ -528,6 +582,9 @@ export interface HistoryItem {
   changePct?: number;
   volumeRatio?: number;
   turnoverRate?: number;
+  idealBuy?: string;
+  stopLoss?: string;
+  biasMa5?: number;
   modelUsed?: string;  // 历史元数据快照，仅用于列表展示，不影响运行时调用与路由
   marketPhaseSummary?: MarketPhaseSummary | null;
   createdAt: string;
@@ -554,6 +611,9 @@ export interface NewsIntelItem {
   title: string;
   snippet: string;
   url: string;
+  source?: string | null;
+  publishedDate?: string | null;
+  dimension?: string | null;
 }
 
 /** News response */
@@ -587,6 +647,12 @@ export interface StockBarItem {
   operationAdvice?: string;
   action?: DecisionAction | null;
   actionLabel?: string | null;
+  currentPrice?: number;
+  changePct?: number;
+  trendPrediction?: string;
+  idealBuy?: string;
+  stopLoss?: string;
+  biasMa5?: number;
   analysisCount: number;
   lastAnalysisTime?: string;
   modelUsed?: string;

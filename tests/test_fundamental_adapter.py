@@ -7,6 +7,8 @@ import os
 import sys
 import unittest
 from datetime import datetime, timedelta
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
@@ -15,13 +17,153 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from data_provider.fundamental_adapter import (
     AkshareFundamentalAdapter,
+    _attach_financial_freshness,
     _build_dividend_payload,
     _extract_latest_row,
     _parse_dividend_plan_to_per_share,
+    _safe_amount_float,
 )
 
 
 class TestFundamentalAdapter(unittest.TestCase):
+    def test_financial_freshness_marks_statement_behind_newer_forecast_period(self) -> None:
+        earnings = {
+            "financial_report": {"report_date": "2026-03-31"},
+            "forecast": {"report_date": "2026-06-30"},
+        }
+
+        _attach_financial_freshness(earnings)
+
+        self.assertEqual(
+            earnings["data_freshness"],
+            {
+                "status": "lagging_reference_period",
+                "financial_report_date": "2026-03-31",
+                "latest_reference_period": "2026-06-30",
+            },
+        )
+
+    def test_newer_reference_period_triggers_financial_refresh_attempt(self) -> None:
+        baostock = SimpleNamespace(
+            get_fundamental_bundle=lambda _code: {
+                "status": "partial",
+                "growth": {"net_profit_yoy": 10.0},
+                "earnings": {
+                    "financial_report": {"report_date": "2026-03-31"},
+                    "forecast": {"report_date": "2026-06-30"},
+                },
+                "institution": {},
+                "source_chain": ["fundamental:baostock:2026Q1"],
+                "errors": [],
+                "queried": ["financial", "forecast", "quick", "dividend"],
+            }
+        )
+        adapter = AkshareFundamentalAdapter(baostock_adapter=baostock)
+        financial_df = pd.DataFrame(
+            {
+                "股票代码": ["600519"],
+                "报告期": ["2026-06-30"],
+                "归母净利润同比": [68.0],
+                "归母净利润": [391.7],
+            }
+        )
+        calls = []
+
+        def fake_candidates(candidates):
+            calls.append(candidates)
+            if candidates and candidates[0][0] == "stock_financial_abstract":
+                return financial_df, "stock_financial_abstract", []
+            return None, None, []
+
+        with patch.object(adapter, "_call_df_candidates", side_effect=fake_candidates):
+            result = adapter.get_fundamental_bundle("600519")
+
+        self.assertTrue(
+            any(candidates[0][0] == "stock_financial_abstract" for candidates in calls)
+        )
+        self.assertEqual(
+            result["earnings"]["financial_report"]["report_date"],
+            "2026-06-30",
+        )
+        self.assertEqual(
+            result["earnings"]["data_freshness"]["status"],
+            "current_to_reference_period",
+        )
+
+    def test_safe_amount_float_normalizes_cn_units(self) -> None:
+        self.assertEqual(_safe_amount_float("-8.70亿"), -870_000_000.0)
+        self.assertEqual(_safe_amount_float("125.5万"), 1_255_000.0)
+
+    def test_capital_flow_uses_shared_ths_ranking_fallback(self) -> None:
+        adapter = AkshareFundamentalAdapter()
+        rank_df = pd.DataFrame(
+            {
+                "股票代码": ["600519"],
+                "净额": ["-8.70亿"],
+            }
+        )
+        with patch.object(
+            adapter,
+            "_call_df_candidates",
+            side_effect=[(None, None, ["eastmoney:ProxyError"]), (None, None, [])],
+        ), patch.object(
+            adapter,
+            "_get_individual_flow_rank_fallback",
+            return_value=rank_df,
+        ):
+            result = adapter.get_capital_flow("600519")
+
+        self.assertEqual(result["stock_flow"]["main_net_inflow"], -870_000_000.0)
+        self.assertIn("capital_stock:stock_fund_flow_individual", result["source_chain"])
+
+    def test_capital_flow_falls_back_when_shared_rank_does_not_contain_stock(self) -> None:
+        adapter = AkshareFundamentalAdapter()
+        shared_rank = pd.DataFrame({"股票代码": ["600000"], "净额": ["1.00亿"]})
+        per_stock = pd.DataFrame({"股票代码": ["000039"], "主力净流入": ["3200万"]})
+
+        with patch.object(
+            adapter,
+            "_get_individual_flow_rank_fallback",
+            return_value=shared_rank,
+        ), patch.object(
+            adapter,
+            "_call_df_candidates",
+            return_value=(per_stock, "stock_individual_fund_flow", []),
+        ) as candidates:
+            result = adapter.get_capital_flow("000039")
+
+        self.assertEqual(result["stock_flow"]["main_net_inflow"], 32_000_000.0)
+        self.assertIn("capital_stock:stock_individual_fund_flow", result["source_chain"])
+        self.assertTrue(candidates.called)
+
+    def test_ths_capital_flow_ranking_reuses_session_disk_cache(self) -> None:
+        frame = pd.DataFrame({"股票代码": ["600519"], "净额": ["1.25亿"]})
+        fake_akshare = SimpleNamespace(stock_fund_flow_individual=lambda **_kwargs: frame)
+        adapter_cls = AkshareFundamentalAdapter
+        original_frame = adapter_cls._individual_flow_rank_cache
+        original_at = adapter_cls._individual_flow_rank_cache_at
+        try:
+            with TemporaryDirectory() as temp_dir, patch.dict(
+                os.environ,
+                {"DATABASE_PATH": os.path.join(temp_dir, "stock_analysis.db")},
+            ), patch.dict(sys.modules, {"akshare": fake_akshare}):
+                adapter_cls._individual_flow_rank_cache = None
+                adapter_cls._individual_flow_rank_cache_at = 0.0
+                first = adapter_cls._get_individual_flow_rank_fallback()
+                adapter_cls._individual_flow_rank_cache = None
+                adapter_cls._individual_flow_rank_cache_at = 0.0
+                fake_akshare.stock_fund_flow_individual = lambda **_kwargs: (_ for _ in ()).throw(
+                    AssertionError("network should not be called after a session-cache hit")
+                )
+                second = adapter_cls._get_individual_flow_rank_fallback()
+        finally:
+            adapter_cls._individual_flow_rank_cache = original_frame
+            adapter_cls._individual_flow_rank_cache_at = original_at
+
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertEqual(str(second.iloc[0]["股票代码"]), "600519")
+
     def test_parse_dividend_plan_to_per_share_supports_cn_patterns(self) -> None:
         self.assertAlmostEqual(_parse_dividend_plan_to_per_share("10派3元(含税)"), 0.3, places=6)
         self.assertAlmostEqual(_parse_dividend_plan_to_per_share("每10股派发2.5元"), 0.25, places=6)
@@ -127,6 +269,46 @@ class TestFundamentalAdapter(unittest.TestCase):
         self.assertEqual(len(events), 2)  # duplicate + future day filtered
         self.assertEqual(dividend_payload.get("ttm_event_count"), 1)
         self.assertAlmostEqual(dividend_payload.get("ttm_cash_dividend_per_share"), 0.3, places=6)
+
+    def test_institution_candidates_use_periods_and_aggregate_holdings(self) -> None:
+        adapter = AkshareFundamentalAdapter()
+        captured = []
+        institution_df = pd.DataFrame(
+            {
+                "持股机构类型": ["基金", "基金"],
+                "持股比例增幅": [0.06, -0.01],
+            }
+        )
+        top10_df = pd.DataFrame(
+            {
+                "股东名称": ["甲", "乙"],
+                "占总流通股本持股比例": [10.0, 5.5],
+                "变动比率": [1.2, -0.4],
+            }
+        )
+
+        def fake_candidates(candidates):
+            captured.append(candidates)
+            index = len(captured)
+            if index == 5:
+                return institution_df, "stock_institute_hold_detail", []
+            if index == 6:
+                return top10_df, "stock_gdfx_free_top_10_em", []
+            return None, None, []
+
+        with patch.object(adapter, "_call_df_candidates", side_effect=fake_candidates):
+            result = adapter.get_fundamental_bundle("600519")
+
+        institution_candidates = captured[4]
+        top10_candidates = captured[5]
+        self.assertTrue(all(name == "stock_institute_hold_detail" for name, _ in institution_candidates))
+        self.assertTrue(all("quarter" in kwargs for _, kwargs in institution_candidates))
+        self.assertEqual(top10_candidates[0][0], "stock_gdfx_free_top_10_em")
+        self.assertEqual(top10_candidates[0][1]["symbol"], "sh600519")
+        self.assertEqual(result["institution"]["institution_count"], 2)
+        self.assertAlmostEqual(result["institution"]["institution_holding_change"], 0.05, places=6)
+        self.assertAlmostEqual(result["institution"]["top10_holder_change"], 0.8, places=6)
+        self.assertAlmostEqual(result["institution"]["top10_total_holding_pct"], 15.5, places=6)
 
     def test_build_dividend_payload_returns_empty_when_code_not_matched(self) -> None:
         now = datetime.now().strftime("%Y-%m-%d")

@@ -35,6 +35,12 @@ _MAX_FEED_REDIRECTS = 5
 _UPSTREAM_FETCH_FAILURE_MESSAGE = "fetch failed: upstream request failed"
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _DISABLE_REQUEST_PROXIES = {"http": None, "https": None}
+# Keep the transport callable local to this module.  Patching
+# ``requests.get`` through another provider module mutates the shared requests
+# package and can race with intelligence fetches running in background tests.
+# A local seam avoids that cross-provider coupling without changing runtime
+# behavior.
+_http_get = requests.get
 _DNS_GUARD_LOCK = threading.Lock()
 _AUTO_FETCH_MIN_INTERVAL_SECONDS = 60 * 60
 _BUILTIN_SOURCE_TEMPLATES = [
@@ -569,7 +575,7 @@ class IntelligenceService:
             try:
                 request_kwargs = dict(kwargs)
                 request_kwargs.setdefault("proxies", _DISABLE_REQUEST_PROXIES)
-                return requests.get(raw_url, **request_kwargs)
+                return _http_get(raw_url, **request_kwargs)
             finally:
                 socket.getaddrinfo = original_getaddrinfo
 

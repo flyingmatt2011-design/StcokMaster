@@ -48,6 +48,71 @@ describe('LLMChannelEditor', () => {
     return calls[calls.length - 1]?.[0] || [];
   }
 
+  it('keeps the save action visible at the top and enables it after editing a channel', async () => {
+    render(
+      <LLMChannelEditor
+        items={openAiItems}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />
+    );
+
+    const saveToolbar = screen.getByTestId('llm-save-toolbar');
+    const saveButton = within(saveToolbar).getByRole('button', { name: '保存 AI 配置' });
+
+    expect(saveToolbar).toHaveClass('sticky');
+    expect(saveButton).toBeDisabled();
+    expect(within(saveToolbar).getByText('AI 配置已保存')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /OpenAI 官方/i }));
+    fireEvent.change(await screen.findByLabelText('Base URL'), {
+      target: { value: 'https://proxy.example.com/v1' },
+    });
+
+    expect(saveButton).toBeEnabled();
+    expect(within(saveToolbar).getByText('AI 配置有未保存的修改')).toBeInTheDocument();
+  });
+
+  it('does not show unrelated optional data-source and notification warnings after an AI save', async () => {
+    const llmWarning = '检测到已同步清理失效的运行时模型引用。';
+    update.mockResolvedValue({
+      success: true,
+      configVersion: 'v2',
+      appliedCount: 1,
+      skippedMaskedCount: 0,
+      reloadTriggered: true,
+      updatedKeys: ['LLM_OPENAI_BASE_URL'],
+      warnings: [
+        '未配置 Tushare Token，将使用其他数据源',
+        '未配置通知渠道，将不发送推送通知',
+        '仅配置 FEISHU_APP_ID / FEISHU_APP_SECRET 不会开启飞书静态通知。请选择以下方式之一。',
+        llmWarning,
+      ],
+    });
+
+    render(
+      <LLMChannelEditor
+        items={openAiItems}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /OpenAI 官方/i }));
+    fireEvent.change(await screen.findByLabelText('Base URL'), {
+      target: { value: 'https://proxy.example.com/v1' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存 AI 配置' }));
+
+    expect(await screen.findByText('AI 配置已保存')).toBeInTheDocument();
+    expect(screen.getByText(llmWarning)).toBeInTheDocument();
+    expect(screen.queryByText(/未配置 Tushare Token/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/未配置通知渠道/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/仅配置 FEISHU_APP_ID/)).not.toBeInTheDocument();
+  });
+
   it('reports an empty generation backend draft when channel settings are unchanged', async () => {
     const onDraftItemsChange = vi.fn();
     const { rerender } = render(

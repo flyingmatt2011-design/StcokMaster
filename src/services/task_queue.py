@@ -15,13 +15,16 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import logging
+import os
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, Future
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Optional, Dict, List, Any, TYPE_CHECKING, Tuple, Literal, Callable
 
 if TYPE_CHECKING:
@@ -37,6 +40,34 @@ from src.utils.analysis_metadata import SELECTION_SOURCES
 from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 
 logger = logging.getLogger(__name__)
+
+
+def _task_stage(progress: int, message: Optional[str], status: "TaskStatus") -> str:
+    """Return a stable UI stage without changing pipeline progress semantics."""
+    if status == TaskStatus.PENDING:
+        return "queued"
+    if status == TaskStatus.CANCEL_REQUESTED:
+        return "stopping"
+    if status == TaskStatus.COMPLETED:
+        return "completed"
+    if status == TaskStatus.FAILED:
+        return "failed"
+    if status == TaskStatus.CANCELLED:
+        return "cancelled"
+    normalized = (message or "").lower()
+    if any(token in normalized for token in ("新闻", "资讯", "search", "news")):
+        return "news"
+    if any(token in normalized for token in ("llm", "ai ", "模型", "智能分析")):
+        return "llm"
+    if any(token in normalized for token in ("报告", "保存", "渲染", "report")):
+        return "report"
+    if progress < 30:
+        return "market_data"
+    if progress < 60:
+        return "indicators"
+    if progress < 90:
+        return "llm"
+    return "report"
 
 
 def _dedupe_stock_code_key(stock_code: str) -> str:
@@ -88,6 +119,10 @@ class TaskInfo:
     trace_id: Optional[str] = None
     region: Optional[str] = None
     flow_events: List[Dict[str, Any]] = field(default_factory=list)
+    force_refresh: bool = False
+    notify: bool = True
+    recovered: bool = False
+    recoverable: bool = False
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert task info into an API-friendly dictionary."""
@@ -108,10 +143,21 @@ class TaskInfo:
             "original_query": self.original_query,
             "selection_source": self.selection_source,
             "skills": self.skills,
+            "stage": _task_stage(self.progress, self.message, self.status),
+            "elapsed_seconds": self.elapsed_seconds,
+            "recovered": self.recovered,
         }
         if self.region is not None:
             payload["region"] = self.region
         return payload
+
+    @property
+    def elapsed_seconds(self) -> Optional[int]:
+        """Return wall-clock runtime for status displays."""
+        if self.started_at is None:
+            return None
+        end = self.completed_at or datetime.now()
+        return max(0, int((end - self.started_at).total_seconds()))
     
     def copy(self) -> 'TaskInfo':
         """Create a shallow copy of the task information."""
@@ -138,6 +184,10 @@ class TaskInfo:
             trace_id=self.trace_id or self.task_id,
             region=self.region,
             flow_events=copy.deepcopy(self.flow_events),
+            force_refresh=self.force_refresh,
+            notify=self.notify,
+            recovered=self.recovered,
+            recoverable=self.recoverable,
         )
 
 
@@ -202,9 +252,121 @@ class AnalysisTaskQueue:
         # 任务历史保留数量（内存中）
         self._max_history = 100
         self._max_flow_events_per_task = 200
+        state_path = os.getenv("STOCKMASTER_TASK_STATE_PATH", "").strip()
+        self._state_path = Path(state_path).expanduser() if state_path else None
         
         self._initialized = True
         logger.info(f"[TaskQueue] 初始化完成，最大并发: {max_workers}")
+        self._restore_unfinished_tasks()
+
+    def _persist_unfinished_tasks_locked(self) -> None:
+        """Atomically journal recoverable analysis tasks for desktop restarts."""
+        if self._state_path is None:
+            return
+        records = []
+        for task in self._tasks.values():
+            if task.status not in (
+                TaskStatus.PENDING,
+                TaskStatus.PROCESSING,
+                TaskStatus.CANCEL_REQUESTED,
+            ):
+                continue
+            if not task.recoverable:
+                continue
+            records.append({
+                "task_id": task.task_id,
+                "stock_code": task.stock_code,
+                "stock_name": task.stock_name,
+                "report_type": task.report_type,
+                "analysis_phase": task.analysis_phase,
+                "original_query": task.original_query,
+                "selection_source": task.selection_source,
+                "query_source": task.query_source,
+                "portfolio_context": task.portfolio_context,
+                "skills": task.skills,
+                "report_language": task.report_language,
+                "force_refresh": task.force_refresh,
+                "notify": task.notify,
+                "created_at": task.created_at.isoformat(),
+            })
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = self._state_path.with_suffix(f"{self._state_path.suffix}.tmp")
+            temp_path.write_text(
+                json.dumps({"version": 1, "tasks": records}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(temp_path, self._state_path)
+        except Exception as exc:
+            logger.warning("[TaskQueue] 保存未完成任务失败（不影响当前分析）: %s", exc)
+
+    def _restore_unfinished_tasks(self) -> None:
+        """Requeue interrupted standard analysis tasks from the desktop journal."""
+        if self._state_path is None or not self._state_path.is_file():
+            return
+        try:
+            payload = json.loads(self._state_path.read_text(encoding="utf-8"))
+            records = payload.get("tasks", []) if isinstance(payload, dict) else []
+        except Exception as exc:
+            logger.warning("[TaskQueue] 读取未完成任务失败，已忽略恢复文件: %s", exc)
+            return
+
+        restored = 0
+        with self._data_lock:
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                stock_code = resolve_index_stock_code_for_analysis(str(record.get("stock_code") or ""))
+                if not stock_code:
+                    continue
+                dedupe_key = _dedupe_stock_code_key(stock_code)
+                if dedupe_key in self._analyzing_stocks:
+                    continue
+                task_id = str(record.get("task_id") or uuid.uuid4().hex)
+                created_at = datetime.now()
+                try:
+                    if record.get("created_at"):
+                        created_at = datetime.fromisoformat(str(record["created_at"]))
+                except (TypeError, ValueError):
+                    pass
+                task = TaskInfo(
+                    task_id=task_id,
+                    trace_id=task_id,
+                    stock_code=stock_code,
+                    stock_name=record.get("stock_name"),
+                    status=TaskStatus.PENDING,
+                    progress=0,
+                    message="已从上次中断恢复，等待重新分析",
+                    report_type=str(record.get("report_type") or "detailed"),
+                    analysis_phase=str(record.get("analysis_phase") or "auto"),
+                    created_at=created_at,
+                    original_query=record.get("original_query"),
+                    selection_source=record.get("selection_source"),
+                    query_source=str(record.get("query_source") or "api"),
+                    portfolio_context=record.get("portfolio_context") if isinstance(record.get("portfolio_context"), dict) else None,
+                    skills=list(record["skills"]) if isinstance(record.get("skills"), list) else None,
+                    report_language=record.get("report_language"),
+                    force_refresh=bool(record.get("force_refresh", False)),
+                    notify=bool(record.get("notify", True)),
+                    recovered=True,
+                    recoverable=True,
+                )
+                self._tasks[task_id] = task
+                self._analyzing_stocks[dedupe_key] = task_id
+                self._futures[task_id] = self.executor.submit(
+                    self._execute_task,
+                    task_id,
+                    stock_code,
+                    task.report_type,
+                    task.force_refresh,
+                    task.notify,
+                    task.skills,
+                    task.report_language,
+                )
+                restored += 1
+            self._persist_unfinished_tasks_locked()
+        if restored:
+            logger.info("[TaskQueue] 已恢复 %s 个未完成分析任务", restored)
     
     @property
     def executor(self) -> ThreadPoolExecutor:
@@ -434,6 +596,9 @@ class AnalysisTaskQueue:
                     portfolio_context=dict(portfolio_context) if isinstance(portfolio_context, dict) else None,
                     skills=task_skills,
                     report_language=report_language,
+                    force_refresh=force_refresh,
+                    notify=notify,
+                    recoverable=True,
                 )
                 self._tasks[task_id] = task_info
                 self._analyzing_stocks[dedupe_key] = task_id
@@ -464,6 +629,7 @@ class AnalysisTaskQueue:
             # reach this point after every submit in the batch has succeeded.
             for task_info in accepted:
                 self._broadcast_event("task_created", task_info.to_dict())
+            self._persist_unfinished_tasks_locked()
 
         return accepted, duplicates
 
@@ -661,6 +827,8 @@ class AnalysisTaskQueue:
             task_snapshot = task.copy()
 
         self._broadcast_event(event_type, task_snapshot.to_dict())
+        with self._data_lock:
+            self._persist_unfinished_tasks_locked()
         return task_snapshot
     
     # ========== 任务执行 ==========
@@ -700,6 +868,7 @@ class AnalysisTaskQueue:
             task.started_at = datetime.now()
             task.message = "正在分析中..."
             task.progress = 10
+            self._persist_unfinished_tasks_locked()
         
         self._broadcast_event("task_started", task.to_dict())
         
@@ -756,6 +925,7 @@ class AnalysisTaskQueue:
                         dedupe_key = _dedupe_stock_code_key(task.stock_code)
                         if dedupe_key in self._analyzing_stocks:
                             del self._analyzing_stocks[dedupe_key]
+                        self._persist_unfinished_tasks_locked()
                 
                 self._broadcast_event("task_completed", task.to_dict())
                 logger.info(f"[TaskQueue] 任务完成: {task_id} ({stock_code})")
@@ -786,6 +956,7 @@ class AnalysisTaskQueue:
                     dedupe_key = _dedupe_stock_code_key(task.stock_code)
                     if dedupe_key in self._analyzing_stocks:
                         del self._analyzing_stocks[dedupe_key]
+                    self._persist_unfinished_tasks_locked()
             
             self._broadcast_event("task_failed", task.to_dict())
             

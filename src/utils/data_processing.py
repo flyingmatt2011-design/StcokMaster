@@ -45,6 +45,60 @@ def parse_json_field(value: Any) -> Any:
     return value
 
 
+def extract_stockmaster_display_fields(raw_result: Any) -> Dict[str, Any]:
+    """Copy existing structured report facts for the StockMaster display."""
+    payload = parse_json_field(raw_result)
+    empty = {
+        "core_conclusion": None,
+        "risk_alerts": [],
+        "positive_catalysts": [],
+        "support_level": None,
+        "resistance_level": None,
+        "bias_ma5": None,
+    }
+    if not isinstance(payload, dict):
+        return empty
+
+    dashboard = payload.get("dashboard")
+    if not isinstance(dashboard, dict):
+        return empty
+    data_perspective = dashboard.get("data_perspective")
+    price_position = data_perspective.get("price_position") if isinstance(data_perspective, dict) else None
+    if not isinstance(price_position, dict):
+        price_position = {}
+    intelligence = dashboard.get("intelligence")
+    if not isinstance(intelligence, dict):
+        intelligence = {}
+
+    def text(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    def texts(value: Any) -> List[str]:
+        if not isinstance(value, list):
+            return []
+        return [normalized for item in value if (normalized := text(item))]
+
+    core_conclusion = dashboard.get("core_conclusion")
+    if isinstance(core_conclusion, dict):
+        core_conclusion = (
+            core_conclusion.get("one_sentence")
+            or core_conclusion.get("summary")
+            or core_conclusion.get("conclusion")
+        )
+
+    return {
+        "core_conclusion": text(core_conclusion),
+        "risk_alerts": texts(intelligence.get("risk_alerts")),
+        "positive_catalysts": texts(intelligence.get("positive_catalysts")),
+        "support_level": text(price_position.get("support_level")),
+        "resistance_level": text(price_position.get("resistance_level")),
+        "bias_ma5": _safe_float(price_position.get("bias_ma5")),
+    }
+
+
 def _non_empty_dict(value: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(value, dict):
         return None
@@ -285,6 +339,42 @@ def extract_fundamental_detail_fields(
     return {
         "financial_report": financial_report,
         "dividend_metrics": dividend_metrics,
+    }
+
+
+def extract_context_enrichment_detail_fields(context_snapshot: Any) -> Dict[str, Any]:
+    """Expose context-only valuation and chart-pattern enrichments for reports."""
+    snapshot_obj = parse_json_field(context_snapshot)
+    if not isinstance(snapshot_obj, dict):
+        return {"valuation_history": None, "chart_pattern_context": None}
+
+    valuation_history = None
+    fundamental_ctx = extract_fundamental_context(snapshot_obj)
+    if isinstance(fundamental_ctx, dict):
+        valuation_block = fundamental_ctx.get("valuation")
+        valuation_data = valuation_block.get("data") if isinstance(valuation_block, dict) else None
+        history = valuation_data.get("history_percentiles") if isinstance(valuation_data, dict) else None
+        if isinstance(history, dict) and isinstance(history.get("metrics"), dict):
+            valuation_history = history
+
+    chart_pattern_context = None
+    enhanced = snapshot_obj.get("enhanced_context")
+    trend = enhanced.get("trend_analysis") if isinstance(enhanced, dict) else None
+    if isinstance(trend, dict):
+        patterns = trend.get("chart_patterns")
+        summary = trend.get("chart_pattern_summary")
+        if isinstance(patterns, list) or summary:
+            chart_pattern_context = {
+                "patterns": [dict(item) for item in patterns if isinstance(item, dict)]
+                if isinstance(patterns, list)
+                else [],
+                "summary": str(summary or ""),
+                "score_included": False,
+            }
+
+    return {
+        "valuation_history": valuation_history,
+        "chart_pattern_context": chart_pattern_context,
     }
 
 

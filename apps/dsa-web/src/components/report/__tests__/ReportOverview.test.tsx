@@ -19,6 +19,32 @@ const baseSummary = {
 };
 
 describe('ReportOverview', () => {
+  it('marks the report surface for container-aware responsive layout', () => {
+    render(<ReportOverview meta={baseMeta} summary={baseSummary} />);
+
+    expect(screen.getByTestId('report-overview')).toHaveClass('stockmaster-report-overview');
+  });
+
+  it('places supplemental news in the main column directly after analysis points', () => {
+    render(
+      <ReportOverview
+        meta={baseMeta}
+        summary={baseSummary}
+        newsPanel={<section data-testid="supplemental-news">资讯动态</section>}
+      />,
+    );
+
+    const analysisPanel = screen.getByText('分析要点').closest('section');
+    const newsSlot = screen.getByTestId('report-news-slot');
+    const mainColumn = newsSlot.closest('main');
+
+    expect(analysisPanel).not.toBeNull();
+    expect(mainColumn).toHaveClass('terminal-report-main');
+    expect(mainColumn).toContainElement(analysisPanel);
+    expect(newsSlot.previousElementSibling).toBe(analysisPanel);
+    expect(newsSlot).toContainElement(screen.getByTestId('supplemental-news'));
+  });
+
   it('renders final market phase and partial-bar labels from report metadata', () => {
     render(
       <ReportOverview
@@ -209,7 +235,7 @@ describe('ReportOverview', () => {
     expect(within(relatedBoardsRegion).getByText('+3.21%')).toBeInTheDocument();
   });
 
-  it('places related boards below action advice in one horizontal row', () => {
+  it('places related boards in the terminal data rail after the decision content', () => {
     const { container } = render(
       <ReportOverview
         meta={baseMeta}
@@ -225,21 +251,14 @@ describe('ReportOverview', () => {
       />,
     );
 
-    const actionAdviceTitle = screen.getByText('操作建议');
+    const actionAdviceTitle = screen.getAllByText('操作建议')[0];
     const relatedBoardsRegion = screen.getByRole('region', { name: '关联板块' });
     const boardLists = container.querySelectorAll('.home-related-board-list');
 
     expect(actionAdviceTitle.compareDocumentPosition(relatedBoardsRegion) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByText('关联板块')).toBeInTheDocument();
     expect(screen.getByText('沪股通')).toBeInTheDocument();
-    expect(boardLists[0]).toHaveClass(
-      'flex-nowrap',
-      'overflow-x-auto',
-      'w-full',
-      'min-w-0',
-      'max-w-full',
-      'touch-pan-x',
-    );
+    expect(boardLists[0]).toHaveClass('terminal-board-list');
   });
 
   it('shows board list when rankings are unavailable', () => {

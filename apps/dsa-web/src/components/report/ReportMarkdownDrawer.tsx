@@ -1,5 +1,5 @@
 import type React from 'react';
-import { Component, lazy, Suspense, useCallback, useMemo, useState } from 'react';
+import { Component, lazy, Suspense, useCallback, useState } from 'react';
 import type { ReportLanguage } from '../../types/analysis';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 import { Drawer } from '../common/Drawer';
@@ -22,6 +22,12 @@ interface ReportMarkdownDrawerErrorBoundaryState {
   hasError: boolean;
 }
 
+const createLazyReportMarkdownPanel = () => lazy(
+  () => import('./ReportMarkdownPanel').then((module) => ({ default: module.ReportMarkdownPanel })),
+);
+
+let LazyReportMarkdownPanel = createLazyReportMarkdownPanel();
+
 class ReportMarkdownDrawerErrorBoundary extends Component<
   ReportMarkdownDrawerErrorBoundaryProps,
   ReportMarkdownDrawerErrorBoundaryState
@@ -42,6 +48,9 @@ class ReportMarkdownDrawerErrorBoundary extends Component<
 
   componentDidCatch(error: unknown) {
     console.error('Report markdown drawer failed:', error);
+    // React.lazy caches rejected imports. Recreate the module-level wrapper so a later
+    // drawer mount can retry after a transient chunk-load failure.
+    LazyReportMarkdownPanel = createLazyReportMarkdownPanel();
   }
 
   render() {
@@ -91,11 +100,6 @@ export const ReportMarkdownDrawer: React.FC<ReportMarkdownDrawerProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(true);
   const text = getReportText(normalizeReportLanguage(reportLanguage));
-  const LazyReportMarkdownPanel = useMemo(
-    () => lazy(() => import('./ReportMarkdownPanel').then((m) => ({ default: m.ReportMarkdownPanel }))),
-    [],
-  );
-
   const handleClose = useCallback(() => {
     setIsOpen(false);
     setTimeout(onClose, 300);

@@ -2020,6 +2020,72 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         self.assertIsNone(intel["earnings"].results[0].published_date)
         self.assertEqual(intel["earnings"].results[1].published_date, in_window)
 
+    def test_analytical_filter_drops_obviously_stale_undated_report(self) -> None:
+        service, _ = self._create_service_with_mock_provider()
+        stale_year = datetime.now().year - 3
+        response = _response([
+            _result(
+                "公司深度研究",
+                None,
+                snippet=f"{str(stale_year)[-2:]}Q3 集装箱销量环比回暖。",
+            ),
+            _result("当前机构观点", None, snippet="盈利能力继续改善。"),
+        ])
+
+        filtered = service._filter_news_response(
+            response,
+            search_days=service.ANALYTICAL_INTEL_LOOKBACK_DAYS,
+            max_results=3,
+            log_scope="unit:analytical",
+            keep_unknown=True,
+        )
+
+        self.assertEqual([item.title for item in filtered.results], ["当前机构观点"])
+
+    def test_analytical_filter_drops_undated_item_with_stale_calendar_date_in_text(self) -> None:
+        service, _ = self._create_service_with_mock_provider()
+        stale_date = (datetime.now().date() - timedelta(days=400)).isoformat()
+        response = _response([
+            _result(
+                "历史资讯页",
+                None,
+                snippet=f"该事项发生于 {stale_date}，页面未提供结构化发布时间。",
+            ),
+            _result("当前机构观点", None, snippet="近期订单边际改善。"),
+        ])
+
+        filtered = service._filter_news_response(
+            response,
+            search_days=service.ANALYTICAL_INTEL_LOOKBACK_DAYS,
+            max_results=3,
+            log_scope="unit:explicit-date",
+            keep_unknown=True,
+        )
+
+        self.assertEqual([item.title for item in filtered.results], ["当前机构观点"])
+
+    def test_context_admission_drops_forum_and_user_post_pages(self) -> None:
+        service, _ = self._create_service_with_mock_provider()
+        forum = _result(
+            "今晚要披露半年报了_贵州茅台股吧",
+            datetime.now().date().isoformat(),
+            url="https://guba.eastmoney.com/news,600519,123.html",
+            source="东方财富股吧",
+        )
+        news = _result(
+            "贵州茅台发布半年报",
+            datetime.now().date().isoformat(),
+            url="https://finance.example.com/report",
+            source="财经媒体",
+        )
+
+        filtered = service._filter_ranked_news_for_context(
+            _response([forum, news]),
+            log_scope="unit:community",
+        )
+
+        self.assertEqual([item.title for item in filtered.results], ["贵州茅台发布半年报"])
+
     def test_search_comprehensive_intel_etf_risk_check_keeps_unknown_dates(self) -> None:
         """ETF risk_check should avoid strict freshness filtering."""
         fresh_dt = datetime.now(timezone.utc).replace(microsecond=0)

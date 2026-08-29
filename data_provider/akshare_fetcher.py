@@ -27,6 +27,7 @@ import logging
 import multiprocessing
 import os
 import random
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -964,6 +965,113 @@ class AkshareFetcher(BaseFetcher):
                 return self._get_stock_realtime_quote_tencent(stock_code)
             else:
                 return self._get_stock_realtime_quote_em(stock_code)
+
+    def get_realtime_quotes(
+        self,
+        stock_codes: List[str],
+        source: str = "tencent",
+    ) -> Dict[str, UnifiedRealtimeQuote]:
+        """Fetch multiple A-share quotes in one Tencent request.
+
+        Non-A-share codes and individual parse failures are omitted so the
+        manager can continue through its normal per-symbol fallback chain.
+        """
+        if source != "tencent":
+            return {
+                code: quote
+                for code in stock_codes
+                if (quote := self.get_realtime_quote(code, source=source)) is not None
+            }
+
+        normalized_codes = list(dict.fromkeys(
+            normalize_stock_code(code)
+            for code in stock_codes
+            if re.fullmatch(r"\d{6}(?:\.(?:SH|SS|SZ|BJ))?", str(code).strip(), re.IGNORECASE)
+        ))
+        if not normalized_codes:
+            return {}
+
+        circuit_breaker = get_realtime_circuit_breaker()
+        source_key = "akshare_tencent"
+        if not circuit_breaker.is_available(source_key):
+            logger.info("[熔断] 数据源 %s 处于熔断状态，跳过批量行情", source_key)
+            return {}
+
+        symbol_to_code = {_to_sina_tx_symbol(code): code for code in normalized_codes}
+        url = f"http://{TENCENT_REALTIME_ENDPOINT}={','.join(symbol_to_code)}"
+        started_at = time.time()
+        try:
+            self._enforce_rate_limit()
+            response = requests.get(
+                url,
+                headers={
+                    "Referer": "http://finance.qq.com",
+                    "User-Agent": random.choice(USER_AGENTS),
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+            response.encoding = "gbk"
+
+            payload_by_symbol: Dict[str, str] = {}
+            for segment in response.text.replace("\r", "").replace("\n", "").split(";"):
+                if "=" not in segment:
+                    continue
+                variable, raw_payload = segment.split("=", 1)
+                symbol = variable.strip().removeprefix("v_")
+                payload_by_symbol[symbol] = raw_payload.strip().strip('"')
+
+            quotes: Dict[str, UnifiedRealtimeQuote] = {}
+            for symbol, code in symbol_to_code.items():
+                fields = payload_by_symbol.get(symbol, "").split("~")
+                if len(fields) < 45:
+                    continue
+                quotes[code] = UnifiedRealtimeQuote(
+                    code=code,
+                    name=fields[1] if len(fields) > 1 else "",
+                    source=RealtimeSource.TENCENT,
+                    price=safe_float(fields[3]),
+                    change_pct=safe_float(fields[32]),
+                    change_amount=safe_float(fields[31]) if len(fields) > 31 else None,
+                    volume=_normalize_tencent_volume(fields),
+                    amount=_parse_tencent_amount(fields),
+                    open_price=safe_float(fields[5]),
+                    high=safe_float(fields[33]) if len(fields) > 33 else None,
+                    low=safe_float(fields[34]) if len(fields) > 34 else None,
+                    pre_close=safe_float(fields[4]),
+                    turnover_rate=safe_float(fields[38]) if len(fields) > 38 else None,
+                    amplitude=safe_float(fields[43]) if len(fields) > 43 else None,
+                    volume_ratio=safe_float(fields[49]) if len(fields) > 49 else None,
+                    pe_ratio=safe_float(fields[39]) if len(fields) > 39 else None,
+                    pb_ratio=safe_float(fields[46]) if len(fields) > 46 else None,
+                    circ_mv=safe_float(fields[44]) * 100000000 if len(fields) > 44 and fields[44] else None,
+                    total_mv=safe_float(fields[45]) * 100000000 if len(fields) > 45 and fields[45] else None,
+                )
+
+            if quotes:
+                circuit_breaker.record_success(source_key)
+            logger.info(
+                "[实时行情-腾讯批量] requested=%d success=%d elapsed=%.2fs",
+                len(normalized_codes),
+                len(quotes),
+                time.time() - started_at,
+            )
+            return quotes
+        except Exception as exc:
+            category, detail = _classify_realtime_http_error(exc)
+            failure_message = _build_realtime_failure_message(
+                source_name="腾讯批量",
+                endpoint=TENCENT_REALTIME_ENDPOINT,
+                stock_code=",".join(normalized_codes[:5]),
+                symbol=",".join(list(symbol_to_code)[:5]),
+                category=category,
+                detail=detail,
+                elapsed=time.time() - started_at,
+                error_type=type(exc).__name__,
+            )
+            logger.info(failure_message)
+            circuit_breaker.record_failure(source_key, failure_message)
+            return {}
     
     def _get_stock_realtime_quote_em(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """
@@ -2012,8 +2120,8 @@ class AkshareFetcher(BaseFetcher):
         获取行业板块涨跌榜
 
         数据源优先级：
-        1. 东财接口 (ak.stock_board_industry_name_em)
-        2. 新浪接口 (ak.stock_sector_spot)
+        1. 新浪接口 (ak.stock_sector_spot)
+        2. 东财接口 (ak.stock_board_industry_name_em)
         """
         import akshare as ak
 
@@ -2035,73 +2143,91 @@ class AkshareFetcher(BaseFetcher):
             ]
             return top_sectors, bottom_sectors
         
-        # 优先东财接口
-        try:
-            self._set_random_user_agent()
-            self._enforce_rate_limit()
-
-            logger.info("[API调用] ak.stock_board_industry_name_em() 获取板块排行...")
-            df = ak.stock_board_industry_name_em()
-            if df is not None and not df.empty:
-                change_col = '涨跌幅'
-                name = '板块名称'
-                return _get_rank_top_n(df, change_col, name, n)
-            
-        except Exception as e:
-            logger.warning(f"[Akshare] 东财接口获取行业板块排行失败: {e}，尝试新浪接口")
-
-        # 东财失败后，尝试新浪接口
+        # 新浪接口在桌面端网络环境下更稳定、响应更快。
         try:
             self._set_random_user_agent()
             self._enforce_rate_limit()
 
             logger.info("[API调用] ak.stock_sector_spot() 获取行业板块排行(新浪)...")
             df = ak.stock_sector_spot(indicator='行业')
+            if df is not None and not df.empty:
+                return _get_rank_top_n(df, '涨跌幅', '板块', n)
+        except Exception as e:
+            logger.warning(f"[Akshare] 新浪接口获取行业板块排行失败: {e}，尝试东财接口")
+
+        # 新浪失败后，尝试东财接口。
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            logger.info("[API调用] ak.stock_board_industry_name_em() 获取板块排行...")
+            df = ak.stock_board_industry_name_em()
             if df is None or df.empty:
                 return None
-            change_col = '涨跌幅'
-            name = '板块'
-            return _get_rank_top_n(df, change_col, name, n)
+            return _get_rank_top_n(df, '涨跌幅', '板块名称', n)
         
         except Exception as e:
-            logger.error(f"[Akshare] 新浪接口获取板块排行也失败: {e}")
+            logger.error(f"[Akshare] 东财接口获取板块排行也失败: {e}")
             return None
 
     def get_concept_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
-        """获取概念/题材涨跌榜。"""
+        """获取概念/题材涨跌榜，同花顺失败时降级到东财。"""
         import akshare as ak
 
         try:
             self._set_random_user_agent()
             self._enforce_rate_limit()
+            df = ak.stock_fund_flow_concept(symbol="即时")
+            if df is not None and not df.empty:
+                name_col = next(
+                    (col for col in df.columns if str(col) in {"行业", "概念名称", "板块名称"}),
+                    None,
+                )
+                change_col = next(
+                    (col for col in df.columns if "涨跌幅" in str(col) and "领涨股" not in str(col)),
+                    None,
+                )
+                if name_col is not None and change_col is not None:
+                    work = df[[name_col, change_col]].copy()
+                    work[change_col] = pd.to_numeric(work[change_col], errors="coerce")
+                    work = work.dropna(subset=[change_col])
+                    top = work.nlargest(n, change_col)
+                    bottom = work.nsmallest(n, change_col)
+                    return (
+                        [
+                            {"name": str(row[name_col]), "change_pct": float(row[change_col]), "source": "ths"}
+                            for _, row in top.iterrows()
+                        ],
+                        [
+                            {"name": str(row[name_col]), "change_pct": float(row[change_col]), "source": "ths"}
+                            for _, row in bottom.iterrows()
+                        ],
+                    )
+        except Exception as e:
+            logger.warning(f"[Akshare] 同花顺概念排行失败: {e}，尝试东财")
 
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
             logger.info("[API调用] ak.stock_board_concept_name_em() 获取概念排行...")
             df = ak.stock_board_concept_name_em()
             if df is None or df.empty:
                 return None
-
-            change_col = '涨跌幅'
-            name_col = '板块名称'
+            change_col = "涨跌幅"
+            name_col = "板块名称"
             if change_col not in df.columns or name_col not in df.columns:
                 return None
-
-            df = df.copy()
-            df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
-            df = df.dropna(subset=[change_col])
-            top = df.nlargest(n, change_col)
-            bottom = df.nsmallest(n, change_col)
+            work = df[[name_col, change_col]].copy()
+            work[change_col] = pd.to_numeric(work[change_col], errors="coerce")
+            work = work.dropna(subset=[change_col])
+            top = work.nlargest(n, change_col)
+            bottom = work.nsmallest(n, change_col)
             return (
-                [
-                    {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
-                    for _, row in top.iterrows()
-                ],
-                [
-                    {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
-                    for _, row in bottom.iterrows()
-                ],
+                [{"name": str(row[name_col]), "change_pct": float(row[change_col]), "source": "eastmoney"} for _, row in top.iterrows()],
+                [{"name": str(row[name_col]), "change_pct": float(row[change_col]), "source": "eastmoney"} for _, row in bottom.iterrows()],
             )
         except Exception as e:
-            logger.warning(f"[Akshare] 获取概念排行失败: {e}")
+            logger.warning(f"[Akshare] 东财概念排行也失败: {e}")
             return None
 
     def get_hot_stocks(self, n: int = 10) -> Optional[List[Dict[str, Any]]]:

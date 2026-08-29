@@ -15,8 +15,11 @@
 """
 
 import logging
+import copy
+import os
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor
 from threading import BoundedSemaphore, RLock, Thread
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -28,9 +31,12 @@ from src.data.stock_index_loader import get_index_stock_name
 from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
 from src.services.market_symbol_utils import is_suffix_market_symbol
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
+from .baostock_fundamental_adapter import BaostockFundamentalAdapter
+from .a_share_valuation import AShareValuationHistoryService
 from .fundamental_adapter import AkshareFundamentalAdapter
 from .yfinance_fundamental_adapter import YfinanceFundamentalAdapter
-from .realtime_types import CircuitBreaker
+from .provider_daily_cache import read_session_cache, write_session_cache
+from .realtime_types import ChipDistribution, CircuitBreaker
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -648,6 +654,8 @@ class DataFetcherManager:
         self._fetcher_call_locks_lock = RLock()
         self._stock_name_cache: Dict[str, str] = {}
         self._stock_name_cache_lock = RLock()
+        self._chip_distribution_cache: Dict[str, Tuple[float, Any]] = {}
+        self._chip_distribution_cache_lock = RLock()
         
         if fetchers:
             # 按优先级排序
@@ -656,8 +664,12 @@ class DataFetcherManager:
         else:
             # 默认数据源将在首次使用时延迟加载
             self._init_default_fetchers()
-        self._fundamental_adapter = AkshareFundamentalAdapter()
+        self._fundamental_adapter = AkshareFundamentalAdapter(
+            baostock_adapter=BaostockFundamentalAdapter(),
+            enable_disk_cache=True,
+        )
         self._yfinance_fundamental_adapter = YfinanceFundamentalAdapter()
+        self._valuation_history_service = AShareValuationHistoryService()
         self._tickflow_fetcher = None
         self._tickflow_api_key: Optional[str] = None
         self._tickflow_lock = RLock()
@@ -680,6 +692,10 @@ class DataFetcherManager:
             self._stock_name_cache = {}
         if not hasattr(self, "_stock_name_cache_lock") or self._stock_name_cache_lock is None:
             self._stock_name_cache_lock = RLock()
+        if not hasattr(self, "_chip_distribution_cache") or self._chip_distribution_cache is None:
+            self._chip_distribution_cache = {}
+        if not hasattr(self, "_chip_distribution_cache_lock") or self._chip_distribution_cache_lock is None:
+            self._chip_distribution_cache_lock = RLock()
 
     def _get_fetchers_snapshot(self) -> List[BaseFetcher]:
         self._ensure_concurrency_guards()
@@ -852,6 +868,7 @@ class DataFetcherManager:
         from src.config import get_config
 
         config = get_config()
+        self._ensure_concurrency_guards()
         api_key = (getattr(config, "tickflow_api_key", None) or "").strip()
 
         if not hasattr(self, "_tickflow_lock") or self._tickflow_lock is None:
@@ -2114,6 +2131,112 @@ class DataFetcherManager:
             logger.info(f"[实时行情] {stock_code} 从 {fetcher_name} 获取成功 (独立数据源)")
         return q
 
+    def get_realtime_quotes(
+        self,
+        stock_codes: List[str],
+        *,
+        fallback_missing: bool = True,
+    ) -> Dict[str, Any]:
+        """Fetch a small quote set efficiently while preserving normal fallback semantics.
+
+        ``fallback_missing=False`` is intended for frequent UI polling: one
+        batch-provider failure leaves the last successful UI value untouched
+        instead of multiplying the failure into per-symbol fallback requests.
+        """
+        raw_codes = list(dict.fromkeys(
+            str(code).strip() for code in stock_codes if str(code).strip()
+        ))
+        if not raw_codes:
+            return {}
+
+        from src.config import get_config
+
+        config = get_config()
+        source_priority = [
+            source.strip().lower()
+            for source in config.realtime_source_priority.split(",")
+            if source.strip()
+        ]
+        results: Dict[str, Any] = {}
+        primary_source = source_priority[0] if source_priority else ""
+
+        akshare_source_map = {
+            "tencent": "tencent",
+            "akshare_qq": "tencent",
+            "akshare_sina": "sina",
+            "akshare_em": "em",
+        }
+        if primary_source in akshare_source_map:
+            fetcher = self._get_fetcher_by_name("AkshareFetcher", capability="realtime_quote")
+            batch_method = getattr(fetcher, "get_realtime_quotes", None) if fetcher is not None else None
+            if callable(batch_method):
+                try:
+                    batch_quotes = self._call_fetcher_method(
+                        fetcher,
+                        "get_realtime_quotes",
+                        raw_codes,
+                        source=akshare_source_map[primary_source],
+                    ) or {}
+                    for raw_code in raw_codes:
+                        normalized = normalize_stock_code(raw_code)
+                        quote = batch_quotes.get(normalized)
+                        if quote is not None:
+                            results[raw_code] = self._enrich_realtime_quote(
+                                quote,
+                                realtime_cache_ttl=getattr(config, "realtime_cache_ttl", None),
+                            )
+                except Exception as exc:
+                    logger.warning("[实时行情批量] %s 请求失败: %s", primary_source, exc)
+        elif primary_source:
+            direct_source_map = {
+                "efinance": ("EfinanceFetcher", {}),
+                "tushare": ("TushareFetcher", {}),
+                "tickflow": ("TickFlowFetcher", {}),
+            }
+            direct_source = direct_source_map.get(primary_source)
+            if direct_source is not None:
+                fetcher_name, kwargs = direct_source
+                fetcher = self._get_fetcher_by_name(fetcher_name, capability="realtime_quote")
+                if fetcher is not None and hasattr(fetcher, "get_realtime_quote"):
+                    for raw_code in raw_codes:
+                        try:
+                            quote = self._call_fetcher_method(
+                                fetcher,
+                                "get_realtime_quote",
+                                raw_code,
+                                **kwargs,
+                            )
+                            if quote is not None:
+                                results[raw_code] = self._enrich_realtime_quote(
+                                    quote,
+                                    realtime_cache_ttl=getattr(config, "realtime_cache_ttl", None),
+                                )
+                        except Exception as exc:
+                            logger.debug(
+                                "[实时行情批量] %s %s 请求失败: %s",
+                                primary_source,
+                                raw_code,
+                                exc,
+                            )
+            else:
+                logger.warning("[实时行情批量] 不支持的数据源优先级首项: %s", primary_source)
+
+        if fallback_missing:
+            for raw_code in raw_codes:
+                if raw_code in results:
+                    continue
+                quote = self.get_realtime_quote(raw_code, log_final_failure=False)
+                if quote is not None:
+                    results[raw_code] = quote
+
+        if len(results) != len(raw_codes):
+            logger.warning(
+                "[实时行情批量] 部分行情不可用 requested=%d success=%d",
+                len(raw_codes),
+                len(results),
+            )
+        return results
+
     def _supplement_from_longbridge(self, stock_code: str, primary_quote):
         """Shortcut kept for backward-compat with A-share general loop."""
         return self._supplement_quote(stock_code, primary_quote, "LongbridgeFetcher")
@@ -2141,6 +2264,9 @@ class DataFetcherManager:
         from src.config import get_config
 
         config = get_config()
+        disk_cache_enabled = os.getenv(
+            "STOCKMASTER_SHARED_FETCHER_CACHE", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
 
         # 如果筹码分布功能被禁用，直接返回 None
         if not config.enable_chip_distribution:
@@ -2192,6 +2318,17 @@ class DataFetcherManager:
                         record_count=1,
                     )
                     circuit_breaker.record_success(source_key)
+                    with self._chip_distribution_cache_lock:
+                        self._chip_distribution_cache[stock_code] = (
+                            time.monotonic(),
+                            copy.deepcopy(chip),
+                        )
+                    if disk_cache_enabled:
+                        write_session_cache(
+                            "chip_distribution",
+                            stock_code,
+                            {"chip": chip.to_dict()},
+                        )
                     logger.info(f"[筹码分布] {stock_code} 成功获取 (来源: {fetcher_name})")
                     return chip
                 else:
@@ -2228,6 +2365,61 @@ class DataFetcherManager:
                 logger.warning(f"[筹码分布] {fetcher_name} 获取 {stock_code} 失败: {e}")
                 circuit_breaker.record_failure(source_key, str(e))
                 continue
+
+        with self._chip_distribution_cache_lock:
+            cached = self._chip_distribution_cache.get(stock_code)
+        if cached and time.monotonic() - cached[0] <= 6 * 60 * 60:
+            cached_chip = copy.deepcopy(cached[1])
+            cached_source = str(getattr(cached_chip, "source", "unknown") or "unknown")
+            cached_chip.source = f"cache:{cached_source}"
+            record_provider_run(
+                data_type="chip",
+                provider="local_cache",
+                operation="get_chip_distribution",
+                success=True,
+                latency_ms=0,
+                fallback_from=cached_source,
+                record_count=1,
+            )
+            logger.warning(
+                "[筹码分布] %s 在线数据源均失败，复用本次运行最近成功结果",
+                stock_code,
+            )
+            return cached_chip
+
+        if disk_cache_enabled:
+            cached_payload = read_session_cache("chip_distribution", stock_code)
+            chip_payload = cached_payload.get("chip") if isinstance(cached_payload, dict) else None
+            if isinstance(chip_payload, dict):
+                allowed_fields = {
+                    "code", "date", "source", "profit_ratio", "avg_cost",
+                    "cost_90_low", "cost_90_high", "concentration_90",
+                    "cost_70_low", "cost_70_high", "concentration_70",
+                }
+                try:
+                    cached_chip = ChipDistribution(**{
+                        key: value for key, value in chip_payload.items()
+                        if key in allowed_fields
+                    })
+                except (TypeError, ValueError):
+                    cached_chip = None
+                if _is_meaningful_chip_distribution(cached_chip):
+                    cached_source = str(cached_chip.source or "unknown")
+                    cached_chip.source = f"session_cache:{cached_source}"
+                    record_provider_run(
+                        data_type="chip",
+                        provider="session_cache",
+                        operation="get_chip_distribution",
+                        success=True,
+                        latency_ms=0,
+                        fallback_from=cached_source,
+                        record_count=1,
+                    )
+                    logger.warning(
+                        "[筹码分布] %s 在线数据源均失败，复用本交易日最近成功结果",
+                        stock_code,
+                    )
+                    return cached_chip
 
         logger.warning(f"[筹码分布] {stock_code} 所有数据源均失败")
         return None
@@ -2486,7 +2678,12 @@ class DataFetcherManager:
                 continue
         return []
 
-    def get_market_stats(self, *, purpose: str = "unspecified") -> Dict[str, Any]:
+    def get_market_stats(
+        self,
+        *,
+        purpose: str = "unspecified",
+        force_refresh: bool = False,
+    ) -> Dict[str, Any]:
         """获取市场涨跌统计（自动切换数据源）"""
         logger.info("[MarketStats] component=market_stats action=start purpose=%s", purpose)
         tickflow_fetcher = self._get_tickflow_fetcher()
@@ -2524,7 +2721,11 @@ class DataFetcherManager:
                 continue
             started_at = time.monotonic()
             try:
-                data = fetcher.get_market_stats()
+                data = (
+                    fetcher.get_market_stats(force_refresh=True)
+                    if force_refresh and fetcher.name == "EfinanceFetcher"
+                    else fetcher.get_market_stats()
+                )
                 elapsed = time.monotonic() - started_at
                 if data:
                     logger.info(
@@ -3112,10 +3313,16 @@ class DataFetcherManager:
             **blocks,
         }
 
+    def prefetch_capital_flow_rankings(self) -> int:
+        """Warm the shared free A-share flow ranking used after EM failures."""
+        frame = self._fundamental_adapter._get_individual_flow_rank_fallback()
+        return int(len(frame)) if isinstance(frame, pd.DataFrame) else 0
+
     def get_fundamental_context(
         self,
         stock_code: str,
-        budget_seconds: Optional[float] = None
+        budget_seconds: Optional[float] = None,
+        realtime_quote: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Aggregate fundamental blocks with fail-open semantics.
@@ -3180,7 +3387,9 @@ class DataFetcherManager:
             remaining_seconds = max(0.0, remaining_seconds - consumed_ms / 1000.0)
 
         valuation_timeout = min(fetch_timeout, remaining_seconds)
-        if valuation_timeout > 0:
+        if realtime_quote is not None:
+            quote_payload, valuation_err, valuation_ms = realtime_quote, None, 0
+        elif valuation_timeout > 0:
             quote_payload, valuation_err, valuation_ms = self._run_with_retry(
                 lambda: self.get_realtime_quote(stock_code),
                 valuation_timeout,
@@ -3214,20 +3423,85 @@ class DataFetcherManager:
             [valuation_err] if valuation_err else [],
         )
 
-        # growth / earnings / institution (one AkShare call)
-        if remaining_seconds <= 0:
-            bundle_status = "failed"
-            bundle_payload: Dict[str, Any] = {}
-            bundle_errors = ["fundamental stage timeout"]
-            bundle_ms = 0
-        else:
-            bundle_timeout = min(fetch_timeout, remaining_seconds)
+        # The following capabilities are independent. Run them under the same
+        # wall-clock stage budget so one slow AkShare endpoint cannot consume
+        # the entire budget and prevent capital-flow collection from starting.
+        parallel_timeout = min(fetch_timeout, remaining_seconds)
+        parallel_results: Dict[str, Any] = {}
+        bundle_payload: Any = None
+        bundle_err_msg: Optional[str] = None
+        bundle_ms = 0
+        if parallel_timeout > 0 and not is_etf:
+            parallel_started = time.time()
+            with ThreadPoolExecutor(max_workers=5, thread_name_prefix="fundamental-stage") as executor:
+                futures = {
+                    "bundle": executor.submit(
+                        self._run_with_retry,
+                        lambda: self._fundamental_adapter.get_fundamental_bundle(stock_code),
+                        parallel_timeout,
+                        "fundamental_bundle",
+                    ),
+                    "capital_flow": executor.submit(
+                        self.get_capital_flow_context,
+                        stock_code,
+                        parallel_timeout,
+                    ),
+                    "dragon_tiger": executor.submit(
+                        self.get_dragon_tiger_context,
+                        stock_code,
+                        parallel_timeout,
+                    ),
+                    "boards": executor.submit(
+                        self.get_board_context,
+                        stock_code,
+                        parallel_timeout,
+                    ),
+                    "valuation_history": executor.submit(
+                        self._run_with_retry,
+                        lambda: self._valuation_history_service.get(stock_code),
+                        parallel_timeout,
+                        "fundamental_valuation_history",
+                    ),
+                }
+                bundle_payload, bundle_err_msg, bundle_ms = futures["bundle"].result()
+                for block in ("capital_flow", "dragon_tiger", "boards"):
+                    try:
+                        parallel_results[block] = futures[block].result()
+                    except Exception as exc:
+                        parallel_results[block] = self._build_fundamental_block(
+                            "failed",
+                            {},
+                            [{"provider": block, "result": "failed", "duration_ms": 0}],
+                            [str(exc) or f"{block} failed"],
+                        )
+                try:
+                    history_payload, history_error, history_ms = futures["valuation_history"].result()
+                    parallel_results["valuation_history"] = {
+                        "payload": history_payload if isinstance(history_payload, dict) else {},
+                        "error": history_error,
+                        "duration_ms": history_ms,
+                    }
+                except Exception as exc:
+                    parallel_results["valuation_history"] = {
+                        "payload": {},
+                        "error": str(exc) or "valuation history failed",
+                        "duration_ms": 0,
+                    }
+            _consume_budget(int((time.time() - parallel_started) * 1000))
+        elif parallel_timeout > 0:
             bundle_payload, bundle_err_msg, bundle_ms = self._run_with_retry(
                 lambda: self._fundamental_adapter.get_fundamental_bundle(stock_code),
-                bundle_timeout,
+                parallel_timeout,
                 "fundamental_bundle",
             )
             _consume_budget(bundle_ms)
+
+        # growth / earnings / institution (one AkShare call)
+        if bundle_payload is None:
+            bundle_status = "failed"
+            bundle_payload: Dict[str, Any] = {}
+            bundle_errors = [bundle_err_msg or "fundamental stage timeout"]
+        else:
             if not isinstance(bundle_payload, dict):
                 bundle_status = "failed"
                 bundle_payload = {}
@@ -3309,6 +3583,17 @@ class DataFetcherManager:
         growth_status = self._infer_block_status(growth_payload, bundle_status)
         earnings_status = self._infer_block_status(earnings_payload, bundle_status)
         institution_status = self._infer_block_status(institution_payload, bundle_status)
+        freshness = earnings_payload.get("data_freshness")
+        if (
+            isinstance(freshness, dict)
+            and freshness.get("status") == "lagging_reference_period"
+        ):
+            # A newer forecast/quick-report period exists, but the structured
+            # statement metrics still describe an older quarter. Keep the
+            # values usable while making the limitation visible to quality
+            # diagnostics and the LLM context.
+            growth_status = "partial"
+            earnings_status = "partial"
 
         result_ctx["growth"] = self._build_fundamental_block(
             growth_status,
@@ -3328,6 +3613,35 @@ class DataFetcherManager:
             bundle_chain,
             institution_errors,
         )
+
+        # Historical valuation is additional evidence only.  Keep the existing
+        # realtime PE/PB payload and status, then append empirical PE/PB/PS
+        # percentiles without changing any scoring or decision rule.
+        valuation_history_run = parallel_results.get("valuation_history", {})
+        valuation_history = valuation_history_run.get("payload", {}) if isinstance(valuation_history_run, dict) else {}
+        valuation_metrics = valuation_history.get("metrics") if isinstance(valuation_history, dict) else None
+        if isinstance(valuation_metrics, dict) and valuation_metrics:
+            valuation_block = dict(result_ctx["valuation"])
+            valuation_data = dict(valuation_block.get("data") or {})
+            valuation_data["history_percentiles"] = valuation_history
+            valuation_block["data"] = valuation_data
+            valuation_block["source_chain"] = list(valuation_block.get("source_chain") or []) + [
+                {
+                    "provider": valuation_history.get("provider", "valuation_history"),
+                    "result": "ok",
+                    "duration_ms": int(valuation_history_run.get("duration_ms") or 0),
+                }
+            ]
+            if valuation_block.get("status") in {"failed", "not_supported"}:
+                valuation_block["status"] = "partial"
+            result_ctx["valuation"] = valuation_block
+            valuation_status = str(valuation_block.get("status") or valuation_status)
+        elif isinstance(valuation_history_run, dict) and valuation_history_run.get("error"):
+            valuation_block = dict(result_ctx["valuation"])
+            valuation_block["errors"] = list(valuation_block.get("errors") or []) + [
+                str(valuation_history_run.get("error"))
+            ]
+            result_ctx["valuation"] = valuation_block
 
         # capital flow
         if is_etf:
@@ -3351,25 +3665,23 @@ class DataFetcherManager:
             )
             result_ctx["status"] = "partial"
         else:
-            capital_flow_budget = min(fetch_timeout, remaining_seconds)
-            capital_flow_start = time.time()
-            result_ctx["capital_flow"] = self.get_capital_flow_context(
-                stock_code,
-                budget_seconds=capital_flow_budget,
+            result_ctx["capital_flow"] = parallel_results.get(
+                "capital_flow",
+                self._build_fundamental_block(
+                    "failed", {}, [], ["fundamental stage timeout"],
+                ),
             )
-            _consume_budget(int((time.time() - capital_flow_start) * 1000))
-
-            dragon_tiger_budget = min(fetch_timeout, remaining_seconds)
-            dragon_tiger_start = time.time()
-            result_ctx["dragon_tiger"] = self.get_dragon_tiger_context(
-                stock_code,
-                budget_seconds=dragon_tiger_budget,
+            result_ctx["dragon_tiger"] = parallel_results.get(
+                "dragon_tiger",
+                self._build_fundamental_block(
+                    "failed", {}, [], ["fundamental stage timeout"],
+                ),
             )
-            _consume_budget(int((time.time() - dragon_tiger_start) * 1000))
-
-            result_ctx["boards"] = self.get_board_context(
-                stock_code,
-                budget_seconds=min(fetch_timeout, remaining_seconds),
+            result_ctx["boards"] = parallel_results.get(
+                "boards",
+                self._build_fundamental_block(
+                    "failed", {}, [], ["fundamental stage timeout"],
+                ),
             )
 
         block_statuses = {

@@ -35,6 +35,12 @@ from src.agent.tools.execution import ToolAccessContext
 from src.agent.tools.registry import ToolDefinition, ToolParameter, ToolPolicy, ToolRegistry
 
 
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Codex App Server transport is explicitly unsupported on native Windows",
+)
+
+
 _FAKE_APP_SERVER = r"""
 import json
 import sys

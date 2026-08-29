@@ -22,6 +22,9 @@ describe('ReportNews', () => {
           title: '茅台发布最新经营数据',
           snippet: '公司披露季度经营情况，市场关注度提升。',
           url: 'https://example.com/news',
+          source: '交易所公告',
+          publishedDate: '2026-08-20',
+          dimension: 'announcements',
         },
       ],
     });
@@ -29,6 +32,8 @@ describe('ReportNews', () => {
     const { container } = render(<ReportNews recordId={1} />);
 
     expect(await screen.findByText('茅台发布最新经营数据')).toBeInTheDocument();
+    expect(screen.getByText('2026-08-20')).toBeVisible();
+    expect(screen.getByText('交易所公告')).toBeVisible();
     expect(screen.getByRole('link', { name: '跳转' })).toHaveAttribute('href', 'https://example.com/news');
     expect(screen.getByText('相关资讯/后续检索')).toBeVisible();
     expect(screen.getByText('来源：报告页补充资讯；是否用于分析以输入数据块为准。')).toBeVisible();

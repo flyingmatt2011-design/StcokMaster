@@ -103,43 +103,9 @@ from src.market_context import detect_market, get_market_role, get_market_guidel
 from src.services.daily_market_context import format_daily_market_context_prompt_section
 from src.market_phase_prompt import format_market_phase_prompt_section
 from src.market_structure_prompt import format_market_structure_prompt_section
+from src.analysis_text_normalization import _localized_text, _normalize_risk_warning_values
 
 logger = logging.getLogger(__name__)
-
-
-def _localized_text(language: Any, *, en: str, zh: str, ko: str) -> str:
-    """Pick a deterministic fallback string for the report language (zh/en/ko)."""
-    normalized = normalize_report_language(language)
-    if normalized == "en":
-        return en
-    if normalized == "ko":
-        return ko
-    return zh
-
-
-def _normalize_risk_warning_values(value: Any) -> List[str]:
-    """Normalize arbitrary risk_warning values into a flat list of text alerts."""
-    if value is None:
-        return []
-    if isinstance(value, str):
-        text = value.strip()
-        return [text] if text else []
-    if isinstance(value, (list, tuple, set)):
-        normalized: List[str] = []
-        for item in value:
-            normalized.extend(_normalize_risk_warning_values(item))
-        return normalized
-    if isinstance(value, dict):
-        if not value:
-            return []
-        try:
-            dumped = json.dumps(value, ensure_ascii=False)
-            text = dumped.strip()
-        except (TypeError, ValueError):
-            text = str(value).strip()
-        return [text] if text else []
-    text = str(value).strip()
-    return [text] if text else []
 
 
 def _today_has_realtime_overlay(today: Any) -> bool:
@@ -1720,6 +1686,8 @@ class AnalysisResult:
     market_snapshot: Optional[Dict[str, Any]] = None  # 当日行情快照（展示用）
     raw_response: Optional[str] = None  # 原始响应（调试用）
     search_performed: bool = False  # 是否执行了联网搜索
+    news_result_count: Optional[int] = None  # 实际进入本次分析的新闻结果数
+    news_evidence_present: bool = False  # 本次 LLM 输入是否包含有效新闻证据
     data_sources: str = ""  # 数据来源说明
     success: bool = True
     error_message: Optional[str] = None
@@ -1771,6 +1739,8 @@ class AnalysisResult:
             'buy_reason': self.buy_reason,
             'market_snapshot': self.market_snapshot,
             'search_performed': self.search_performed,
+            'news_result_count': self.news_result_count,
+            'news_evidence_present': self.news_evidence_present,
             'success': self.success,
             'error_message': self.error_message,
             'current_price': self.current_price,
@@ -3131,7 +3101,7 @@ class GeminiAnalyzer:
         last_usage: Dict[str, Any] = {}
         effective_system_prompt = system_prompt or self.TEXT_SYSTEM_PROMPT
         router_model_names = set(get_configured_llm_models(config.llm_model_list))
-        for model in models_to_try:
+        for model_index, model in enumerate(models_to_try):
             origins = route_deployment_origins(config.llm_model_list, model)
             model_stream = bool(stream and not origins.has_hermes)
             recovery_model_list = config.llm_model_list
@@ -3215,6 +3185,7 @@ class GeminiAnalyzer:
 
                 _stream_text: Optional[str] = None
                 _stream_usage: Dict[str, Any] = {}
+                skip_same_model_non_stream = False
 
                 if model_stream:
                     try:
@@ -3248,11 +3219,20 @@ class GeminiAnalyzer:
                                 safe_error,
                             )
                         else:
-                            logger.warning(
-                                "[LiteLLM] %s stream unavailable before first chunk, falling back to non-stream: %s",
-                                model,
-                                safe_error,
-                            )
+                            has_fallback_model = model_index + 1 < len(models_to_try)
+                            skip_same_model_non_stream = has_fallback_model
+                            if has_fallback_model:
+                                logger.warning(
+                                    "[LiteLLM] %s stream returned no content; skipping duplicate non-stream wait and trying next deployment: %s",
+                                    model,
+                                    safe_error,
+                                )
+                            else:
+                                logger.warning(
+                                    "[LiteLLM] %s stream unavailable before first chunk, falling back to non-stream: %s",
+                                    model,
+                                    safe_error,
+                                )
                         last_error = RuntimeError(f"{type(exc).__name__}: {safe_error}")
                     except Exception as exc:
                         safe_error = self._sanitize_litellm_exception_text(exc, config=config, model=model)
@@ -3270,6 +3250,9 @@ class GeminiAnalyzer:
                     if response_validator is not None:
                         response_validator(_stream_text)
                     return _stream_text, model, _stream_usage
+
+                if skip_same_model_non_stream:
+                    continue
 
                 response = call_litellm_with_param_recovery(
                     lambda kwargs: self._dispatch_litellm_completion(
@@ -3582,9 +3565,16 @@ class GeminiAnalyzer:
                 elapsed = time.time() - start_time
 
                 # 记录响应信息
+                effective_model_used = model_used or model_name
                 logger.info(
-                    f"[LLM返回] {model_name} 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符"
+                    f"[LLM返回] {effective_model_used} 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符"
                 )
+                if effective_model_used != model_name:
+                    logger.info(
+                        "[LLM路由] 初始模型 %s，最终成功模型 %s",
+                        model_name,
+                        effective_model_used,
+                    )
                 if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
                     response_preview = redact_diagnostic_text(response_text, limit=300)
                 else:
@@ -3592,7 +3582,7 @@ class GeminiAnalyzer:
                 logger.info(f"[LLM返回 预览]\n{response_preview}")
                 if backend_id not in LOCAL_CLI_GENERATION_BACKEND_IDS:
                     logger.debug(
-                        f"=== {model_name} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ==="
+                        f"=== {effective_model_used} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ==="
                     )
                 # Keep parser/retry progress monotonic so task progress/message never "goes backward".
                 parse_progress = min(99, 93 + retry_count * 2)

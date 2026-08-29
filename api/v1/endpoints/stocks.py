@@ -25,6 +25,9 @@ from api.v1.schemas.stocks import (
     KLineData,
     StockHistoryResponse,
     StockQuote,
+    StockQuoteBatchRequest,
+    StockQuoteBatchResponse,
+    StockQuoteRefreshPolicy,
 )
 from api.v1.schemas.history import WatchlistRequest, WatchlistResponse
 from api.v1.schemas.common import ErrorResponse
@@ -42,6 +45,10 @@ from src.services.stock_service import StockService
 from src.services.stock_list_parser import split_stock_list
 from src.services.system_config_service import SystemConfigService
 from data_provider.base import normalize_stock_code
+from src.core.trading_calendar import (
+    build_market_phase_context,
+    get_next_quote_refresh_transition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -403,6 +410,46 @@ def remove_from_watchlist(
             status_code=500,
             detail={"error": "internal_error", "message": f"从自选删除失败: {str(e)}"},
         )
+
+
+@router.post(
+    "/quotes",
+    response_model=StockQuoteBatchResponse,
+    responses={
+        200: {"description": "批量行情数据，允许部分成功"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="批量获取股票实时行情",
+    description="为自选股短周期刷新提供批量行情；只访问行情数据源，不调用 LLM。",
+)
+def get_stock_quotes(request: StockQuoteBatchRequest) -> StockQuoteBatchResponse:
+    try:
+        result = StockService().get_realtime_quotes(request.stock_codes)
+        return StockQuoteBatchResponse(**result)
+    except Exception as exc:
+        logger.error("批量获取实时行情失败: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"批量获取实时行情失败: {exc}"},
+        )
+
+
+@router.get(
+    "/quotes/refresh-policy",
+    response_model=StockQuoteRefreshPolicy,
+    summary="获取 A 股自选行情刷新策略",
+    description="基于交易所日历返回当前交易阶段和下一阶段边界；不访问行情源、不调用 LLM。",
+)
+def get_stock_quote_refresh_policy() -> StockQuoteRefreshPolicy:
+    context = build_market_phase_context(market="cn")
+    next_transition = get_next_quote_refresh_transition("cn")
+    return StockQuoteRefreshPolicy(
+        phase=context.phase.value,
+        is_trading_day=context.is_trading_day,
+        is_market_open_now=context.is_market_open_now,
+        market_local_time=context.market_local_time.isoformat(),
+        next_transition_at=(next_transition.isoformat() if next_transition else None),
+    )
 
 
 @router.get(

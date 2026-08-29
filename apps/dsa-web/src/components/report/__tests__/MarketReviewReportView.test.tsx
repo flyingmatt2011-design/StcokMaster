@@ -106,6 +106,30 @@ const noBreadthMarketReviewPayload: MarketReviewPayload = {
 };
 
 describe('MarketReviewReportView', () => {
+  it('renders supplemental A-share risk indicators as context-only data', () => {
+    const payload: MarketReviewPayload = {
+      kind: 'market_review',
+      region: 'cn',
+      title: 'A股复盘',
+      indices: [],
+      marketContextIndicators: {
+        scoreIncluded: false,
+        indicators: {
+          buffettIndex: { value: 91.588, percentile: 90.1 },
+          qvix: { value: 16.88 },
+          newHighLow: { newHigh: 8, newLow: 19, ratio: 0.421 },
+        },
+      },
+    };
+
+    render(<MarketReviewReportView payload={payload} reportLanguage="zh" />);
+
+    expect(screen.getByText('市场风险补充指标')).toBeInTheDocument();
+    expect(screen.getByText('仅作环境背景，不参与现有评分')).toBeInTheDocument();
+    expect(screen.getByText('巴菲特指标')).toBeInTheDocument();
+    expect(screen.getByText('50ETF QVIX')).toBeInTheDocument();
+  });
+
   it('uses localized summary card labels and fallbacks for English reports', () => {
     render(
       <MarketReviewReportView

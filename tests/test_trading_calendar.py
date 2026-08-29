@@ -53,6 +53,13 @@ class _FakeCalendar:
             raise ValueError("no previous session")
         return pd.Timestamp(self._sessions[index - 1])
 
+    def next_session(self, session: pd.Timestamp) -> pd.Timestamp:
+        session_date = session.date()
+        index = self._sessions.index(session_date)
+        if index >= len(self._sessions) - 1:
+            raise ValueError("no next session")
+        return pd.Timestamp(self._sessions[index + 1])
+
     def session_open(self, session: pd.Timestamp) -> pd.Timestamp:
         local_open = datetime.combine(
             session.date(),
@@ -386,6 +393,45 @@ class InferMarketPhaseTestCase(unittest.TestCase):
         result = self._infer_with_calendar("cn", current_time, fake_calendar)
 
         self.assertEqual(result, trading_calendar.MarketPhase.NON_TRADING)
+
+    def test_quote_refresh_transition_tracks_cn_lunch_and_next_session(self):
+        fake_calendar = _FakeCalendar(
+            sessions=[date(2026, 3, 27), date(2026, 3, 30)],
+            close_hour=15,
+            tz_name="Asia/Shanghai",
+            open_time=time(9, 30),
+            break_start=time(11, 30),
+            break_end=time(13, 0),
+        )
+        timezone_cn = ZoneInfo("Asia/Shanghai")
+        cases = (
+            (datetime(2026, 3, 27, 10, 0, tzinfo=timezone_cn), datetime(2026, 3, 27, 11, 30, tzinfo=timezone_cn)),
+            (datetime(2026, 3, 27, 12, 0, tzinfo=timezone_cn), datetime(2026, 3, 27, 13, 0, tzinfo=timezone_cn)),
+            (datetime(2026, 3, 27, 16, 0, tzinfo=timezone_cn), datetime(2026, 3, 30, 9, 30, tzinfo=timezone_cn)),
+            (datetime(2026, 3, 28, 10, 0, tzinfo=timezone_cn), datetime(2026, 3, 30, 9, 30, tzinfo=timezone_cn)),
+        )
+
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", True), patch.object(
+            trading_calendar,
+            "xcals",
+            _calendar_namespace(fake_calendar),
+            create=True,
+        ):
+            for current_time, expected in cases:
+                with self.subTest(current_time=current_time):
+                    self.assertEqual(
+                        trading_calendar.get_next_quote_refresh_transition(
+                            "cn",
+                            current_time=current_time,
+                        ),
+                        expected,
+                    )
+
+    def test_quote_refresh_transition_fails_closed_without_calendar(self):
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", False):
+            self.assertIsNone(
+                trading_calendar.get_next_quote_refresh_transition("cn")
+            )
 
     def test_hk_phase_boundaries_include_lunch_and_ten_minute_closing_window(self):
         fake_calendar = _FakeCalendar(

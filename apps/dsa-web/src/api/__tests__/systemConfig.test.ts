@@ -149,6 +149,39 @@ describe('systemConfigApi', () => {
     expect(result.attempts[0].httpStatus).toBe(200);
   });
 
+  it('sends search provider drafts with snake_case fields', async () => {
+    post.mockResolvedValueOnce({
+      data: {
+        success: true,
+        provider: 'bocha',
+        message: '连接成功，返回 2 条结果',
+        result_count: 2,
+        error_code: null,
+        retryable: false,
+        latency_ms: 88,
+      },
+    });
+
+    const result = await systemConfigApi.testSearchProvider({
+      provider: 'bocha',
+      items: [{ key: 'BOCHA_API_KEYS', value: 'draft-key' }],
+      maskToken: '******',
+      query: '贵州茅台 最新公告',
+    });
+
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/system/config/search/test-provider',
+      {
+        provider: 'bocha',
+        items: [{ key: 'BOCHA_API_KEYS', value: 'draft-key' }],
+        mask_token: '******',
+        query: '贵州茅台 最新公告',
+      },
+    );
+    expect(result.resultCount).toBe(2);
+    expect(result.latencyMs).toBe(88);
+  });
+
   it('loads first-run setup status with camelCase fields', async () => {
     get.mockResolvedValueOnce({
       data: {

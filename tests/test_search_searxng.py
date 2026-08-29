@@ -333,6 +333,24 @@ class TestSearXNGSearchProvider(unittest.TestCase):
         self.assertIn(f"https://public-{max_attempts}.example/search", last_search_url)
 
     @patch("src.search_service.requests.get")
+    def test_public_mode_temporarily_skips_after_all_instances_fail(self, mock_get):
+        feed_urls = ["https://public-1.example/", "https://public-2.example/"]
+        mock_get.side_effect = [
+            self._response(json_payload=self._public_feed(feed_urls)),
+            self._response(status_code=429, text="rate limited", headers={"content-type": "text/plain"}),
+            self._response(status_code=429, text="rate limited", headers={"content-type": "text/plain"}),
+        ]
+        provider = self._create_provider(use_public_instances=True)
+
+        first = provider.search("first", max_results=5)
+        second = provider.search("second", max_results=5)
+
+        self.assertFalse(first.success)
+        self.assertFalse(second.success)
+        self.assertIn("临时跳过", second.error_message or "")
+        self.assertEqual(mock_get.call_count, 3)
+
+    @patch("src.search_service.requests.get")
     def test_public_mode_rotates_start_instance_across_requests(self, mock_get):
         feed_urls = [
             "https://public-1.example/",

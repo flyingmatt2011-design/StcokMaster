@@ -51,6 +51,9 @@ _AUX_LIMITATION_STATUSES = {
     ContextFieldStatus.FETCH_FAILED,
     ContextFieldStatus.FALLBACK,
     ContextFieldStatus.STALE,
+    ContextFieldStatus.MISSING,
+    ContextFieldStatus.PARTIAL,
+    ContextFieldStatus.ESTIMATED,
 }
 
 
@@ -318,21 +321,22 @@ def _build_chip_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisContextBl
     chip = _to_dict(artifacts.chip_data)
     if not chip:
         not_supported = bool((artifacts.metadata or {}).get("chip_not_supported"))
-        status = (
-            ContextFieldStatus.NOT_SUPPORTED
-            if not_supported
-            else ContextFieldStatus.MISSING
-        )
+        fetch_failed = bool((artifacts.metadata or {}).get("chip_fetch_failed"))
+        if not_supported:
+            status = ContextFieldStatus.NOT_SUPPORTED
+            missing_reason = "chip_not_supported"
+        elif fetch_failed:
+            status = ContextFieldStatus.FETCH_FAILED
+            missing_reason = "chip_distribution_fetch_failed"
+        else:
+            status = ContextFieldStatus.MISSING
+            missing_reason = "chip_distribution_missing"
         return AnalysisContextBlock(
             status=status,
             items={
                 "chip_distribution": AnalysisContextItem(
                     status=status,
-                    missing_reason=(
-                        "chip_not_supported"
-                        if not_supported
-                        else "chip_distribution_missing"
-                    ),
+                    missing_reason=missing_reason,
                 )
             },
         )
@@ -466,6 +470,18 @@ def _build_news_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisContextBl
                         if coverage_status == "PARTIAL"
                         else None
                     ),
+                )
+            },
+            metadata=metadata,
+        )
+
+    if artifacts.news_result_count == 0:
+        return AnalysisContextBlock(
+            status=ContextFieldStatus.MISSING,
+            items={
+                "content": AnalysisContextItem(
+                    status=ContextFieldStatus.MISSING,
+                    missing_reason="news_context_missing",
                 )
             },
             metadata=metadata,
