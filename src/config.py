@@ -906,6 +906,11 @@ class Config:
     # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-3.1-pro-preview)
     litellm_model: str = ""  # Primary model; must include provider prefix when set explicitly
     litellm_fallback_models: List[str] = field(default_factory=list)  # Cross-model fallback list
+    litellm_analysis_timeout_seconds: int = 90
+    litellm_fast_model_timeout_seconds: int = 60
+    litellm_quality_fallback_timeout_seconds: int = 120
+    litellm_circuit_failure_threshold: int = 2
+    litellm_circuit_cooldown_seconds: int = 180
 
     # Unified temperature for all LLM calls (LLM_TEMPERATURE); legacy per-provider temps are fallback only
     llm_temperature: float = 0.7
@@ -1649,6 +1654,41 @@ class Config:
             minimum=1,
             maximum=MAX_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
         )
+        litellm_analysis_timeout_seconds = parse_env_int(
+            os.getenv('LITELLM_ANALYSIS_TIMEOUT_SECONDS'),
+            90,
+            field_name='LITELLM_ANALYSIS_TIMEOUT_SECONDS',
+            minimum=15,
+            maximum=600,
+        )
+        litellm_fast_model_timeout_seconds = parse_env_int(
+            os.getenv('LITELLM_FAST_MODEL_TIMEOUT_SECONDS'),
+            60,
+            field_name='LITELLM_FAST_MODEL_TIMEOUT_SECONDS',
+            minimum=15,
+            maximum=600,
+        )
+        litellm_quality_fallback_timeout_seconds = parse_env_int(
+            os.getenv('LITELLM_QUALITY_FALLBACK_TIMEOUT_SECONDS'),
+            120,
+            field_name='LITELLM_QUALITY_FALLBACK_TIMEOUT_SECONDS',
+            minimum=15,
+            maximum=600,
+        )
+        litellm_circuit_failure_threshold = parse_env_int(
+            os.getenv('LITELLM_CIRCUIT_FAILURE_THRESHOLD'),
+            2,
+            field_name='LITELLM_CIRCUIT_FAILURE_THRESHOLD',
+            minimum=1,
+            maximum=10,
+        )
+        litellm_circuit_cooldown_seconds = parse_env_int(
+            os.getenv('LITELLM_CIRCUIT_COOLDOWN_SECONDS'),
+            180,
+            field_name='LITELLM_CIRCUIT_COOLDOWN_SECONDS',
+            minimum=15,
+            maximum=3600,
+        )
         opencode_cli_model = (os.getenv('OPENCODE_CLI_MODEL', '') or '').strip()
 
         agent_litellm_model = normalize_agent_litellm_model(
@@ -1807,6 +1847,11 @@ class Config:
             opencode_cli_model=opencode_cli_model,
             litellm_model=litellm_model,
             litellm_fallback_models=litellm_fallback_models,
+            litellm_analysis_timeout_seconds=litellm_analysis_timeout_seconds,
+            litellm_fast_model_timeout_seconds=litellm_fast_model_timeout_seconds,
+            litellm_quality_fallback_timeout_seconds=litellm_quality_fallback_timeout_seconds,
+            litellm_circuit_failure_threshold=litellm_circuit_failure_threshold,
+            litellm_circuit_cooldown_seconds=litellm_circuit_cooldown_seconds,
             llm_temperature=resolve_unified_llm_temperature(litellm_model),
             litellm_config_path=litellm_config_path,
             llm_models_source=llm_models_source,

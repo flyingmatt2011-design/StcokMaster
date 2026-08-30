@@ -35,6 +35,9 @@ export const StockMasterDashboardCards: React.FC<StockMasterDashboardCardsProps>
   const rawScore = typeof calibration?.raw_score === 'number' ? calibration.raw_score : null;
   const adjustedScore = typeof calibration?.adjusted_score === 'number' ? calibration.adjusted_score : null;
   const guardrailReason = typeof calibration?.guardrail_reason === 'string' ? calibration.guardrail_reason.trim() : '';
+  const scoreTrace = Array.isArray(dashboard?.score_trace)
+    ? dashboard.score_trace.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+    : [];
   const overview = selectedReport?.details?.analysisContextPackOverview;
   const qualityScore = overview?.dataQuality?.overallScore;
   const degradedCount = (overview?.counts?.missing || 0)
@@ -51,9 +54,22 @@ export const StockMasterDashboardCards: React.FC<StockMasterDashboardCardsProps>
     ['基本面', attribution?.fundamentals],
     ['市场', attribution?.market_conditions],
   ].filter((item): item is [string, number] => typeof item[1] === 'number');
-  const scoreProvenance = rawScore !== null && adjustedScore !== null && rawScore !== adjustedScore
-    ? `规则校准 ${rawScore} → ${adjustedScore}${guardrailReason ? ` · ${guardrailReason}` : ''}`
-    : '报告原始评分（界面未二次改分）';
+  const scoreTraceParts = scoreTrace.reduce<string[]>((parts, step) => {
+    const stepScore = typeof step.score === 'number' ? step.score : null;
+    if (stepScore === null) return parts;
+    const reason = Array.isArray(step.reason)
+      ? step.reason.filter((item): item is string => typeof item === 'string').join('、')
+      : typeof step.reason === 'string' ? step.reason.trim() : '';
+    const previous = parts.at(-1)?.match(/^(\d+)/)?.[1];
+    if (previous === String(stepScore) && !reason) return parts;
+    parts.push(`${stepScore}${reason ? `（${reason}）` : ''}`);
+    return parts;
+  }, []);
+  const scoreProvenance = scoreTraceParts.length > 1
+    ? `评分轨迹 ${scoreTraceParts.join(' → ')}`
+    : rawScore !== null && adjustedScore !== null && rawScore !== adjustedScore
+      ? `规则校准 ${rawScore} → ${adjustedScore}${guardrailReason ? ` · ${guardrailReason}` : ''}`
+      : '报告原始评分（界面未二次改分）';
 
   return (
     <section className="space-y-2" aria-label="StockMaster 报告概览">

@@ -50,4 +50,18 @@ describe('StockMasterDashboardCards', () => {
 
     expect(screen.getByTestId('report-trust-strip')).toHaveTextContent('报告原始评分（界面未二次改分）');
   });
+
+  it('renders the sequential score trace when the backend supplies one', () => {
+    render(<StockMasterDashboardCards selectedReport={{
+      meta: { id: 10, queryId: 'q-10', stockCode: '000002', stockName: '万科A', reportType: 'detailed', createdAt: '2026-08-29T10:00:00+08:00' },
+      summary: { analysisSummary: 'summary', operationAdvice: '观察', trendPrediction: '震荡', sentimentScore: 52 },
+      details: { rawResult: { dashboard: { score_trace: [
+        { stage: 'llm_output', score: 72 },
+        { stage: 'structure_and_fundamentals', score: 59, reason: ['资金流约束'] },
+        { stage: 'daily_market_context', score: 52, reason: ['大盘约束'] },
+      ] } } },
+    }} />);
+
+    expect(screen.getByTestId('report-trust-strip')).toHaveTextContent('评分轨迹 72 → 59（资金流约束） → 52（大盘约束）');
+  });
 });

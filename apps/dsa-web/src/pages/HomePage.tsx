@@ -430,8 +430,12 @@ const HomePage: React.FC = () => {
   }, [t]);
 
   useEffect(() => {
-    suppressLiveMarketRefreshRef.current = isSubmittingMarketReview || Boolean(marketReviewReport);
-  }, [isSubmittingMarketReview, marketReviewReport]);
+    suppressLiveMarketRefreshRef.current = (
+      isSubmittingMarketReview
+      || Boolean(marketReviewReport)
+      || isBatchAnalyzingWatchlist
+    );
+  }, [isBatchAnalyzingWatchlist, isSubmittingMarketReview, marketReviewReport]);
 
   const refreshLiveMarketDashboard = useCallback((): Promise<void> => {
     if (marketSnapshotRefreshPromiseRef.current) {

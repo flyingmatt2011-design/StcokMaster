@@ -44,6 +44,13 @@ class UnifiedRealtimeQuoteMetadataTestCase(unittest.TestCase):
 
 
 class CircuitBreakerConcurrencyTestCase(unittest.TestCase):
+    def test_weighted_transport_failure_can_open_circuit_immediately(self):
+        breaker = CircuitBreaker(failure_threshold=2, cooldown_seconds=60.0)
+
+        breaker.record_failure("src", "RemoteDisconnected", weight=2)
+
+        self.assertEqual(breaker.get_status()["src"], CircuitBreaker.OPEN)
+
     def test_half_open_allows_only_one_concurrent_probe(self):
         breaker = CircuitBreaker(
             failure_threshold=1,

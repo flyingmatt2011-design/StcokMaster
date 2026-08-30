@@ -290,6 +290,15 @@ def build_history_run_flow_snapshot(
         _as_list(diagnostics.get("llm_runs")),
         raw,
     )
+    last_stage_node = _append_stage_runs(
+        nodes,
+        edges,
+        events,
+        _as_list(diagnostics.get("stage_runs")),
+        anchor_node_id=last_analysis_node or "context_pack",
+    )
+    if last_stage_node is not None:
+        last_analysis_node = last_stage_node
     if last_analysis_node is None:
         _put_node(
             nodes,
@@ -656,6 +665,57 @@ def _append_history_runs(
                 "metadata_saved": run.get("metadata_saved"),
                 "analysis_history_id": run.get("analysis_history_id"),
             },
+        )
+        previous_node_id = node_id
+        last_node_id = node_id
+    return last_node_id
+
+
+def _append_stage_runs(
+    nodes: Dict[str, Dict[str, Any]],
+    edges: List[Dict[str, Any]],
+    events: List[Dict[str, Any]],
+    stage_runs: List[Any],
+    *,
+    anchor_node_id: str,
+) -> Optional[str]:
+    previous_node_id = anchor_node_id
+    last_node_id: Optional[str] = None
+    for index, raw_run in enumerate(stage_runs, start=1):
+        run = _as_mapping(raw_run)
+        if not run:
+            continue
+        stage = _safe_key(run.get("stage") or f"stage_{index}")
+        node_id = f"stage_{stage}_{index}"
+        success = run.get("success") is True
+        status = "success" if success else "failed"
+        timestamp = _datetime_to_iso(run.get("created_at"))
+        duration_ms = _safe_int(run.get("duration_ms"))
+        label = _safe_text(run.get("label"), max_length=80) or stage
+        message = label + ("完成" if success else "失败")
+        _put_node(
+            nodes,
+            node_id,
+            lane="analysis",
+            kind="analysis",
+            label=label,
+            status=status,
+            started_at=_started_at_from_end_and_duration(timestamp, duration_ms),
+            ended_at=timestamp,
+            duration_ms=duration_ms,
+            message=message,
+            metadata=run.get("metadata"),
+        )
+        _append_edge(edges, previous_node_id, node_id, "control", status, label="处理")
+        _append_event(
+            events,
+            "stage_run",
+            node_id=node_id,
+            timestamp=timestamp,
+            severity="success" if success else "danger",
+            title=message,
+            message=message,
+            metadata={"stage": stage, "duration_ms": duration_ms},
         )
         previous_node_id = node_id
         last_node_id = node_id

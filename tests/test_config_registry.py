@@ -252,6 +252,11 @@ class TestGenerationBackendFieldsRegistered(unittest.TestCase):
             "GENERATION_BACKEND_TIMEOUT_SECONDS": {"min": 1, "max": 3600},
             "GENERATION_BACKEND_MAX_OUTPUT_BYTES": {"min": 1, "max": 33554432},
             "GENERATION_BACKEND_MAX_CONCURRENCY": {"min": 1, "max": 16},
+            "LITELLM_ANALYSIS_TIMEOUT_SECONDS": {"min": 15, "max": 600},
+            "LITELLM_FAST_MODEL_TIMEOUT_SECONDS": {"min": 15, "max": 600},
+            "LITELLM_QUALITY_FALLBACK_TIMEOUT_SECONDS": {"min": 15, "max": 600},
+            "LITELLM_CIRCUIT_FAILURE_THRESHOLD": {"min": 1, "max": 10},
+            "LITELLM_CIRCUIT_COOLDOWN_SECONDS": {"min": 15, "max": 3600},
             "LOCAL_CLI_BACKEND_MAX_CONCURRENCY": {"min": 1, "max": 4},
         }
 
@@ -273,6 +278,8 @@ class TestGenerationBackendFieldsRegistered(unittest.TestCase):
         self.assertIn("GENERATION_BACKEND_TIMEOUT_SECONDS", categories["ai_model"])
         self.assertIn("GENERATION_BACKEND_MAX_OUTPUT_BYTES", categories["ai_model"])
         self.assertIn("GENERATION_BACKEND_MAX_CONCURRENCY", categories["ai_model"])
+        self.assertIn("LITELLM_ANALYSIS_TIMEOUT_SECONDS", categories["ai_model"])
+        self.assertIn("LITELLM_CIRCUIT_FAILURE_THRESHOLD", categories["ai_model"])
         self.assertIn("LOCAL_CLI_BACKEND_MAX_CONCURRENCY", categories["ai_model"])
         self.assertIn("AGENT_GENERATION_BACKEND", categories["agent"])
 

@@ -634,7 +634,7 @@ class DataFetcherManager:
         "FinnhubFetcher": {"us"},
         "AlphaVantageFetcher": {"us"},
     }
-    _daily_source_health = CircuitBreaker(failure_threshold=3, cooldown_seconds=300.0)
+    _daily_source_health = CircuitBreaker(failure_threshold=2, cooldown_seconds=120.0)
     _CONCEPT_RANKINGS_CACHE_TTL_SECONDS = 300.0
     _CONCEPT_RANKINGS_EMPTY_CACHE_TTL_SECONDS = 30.0
     _concept_rankings_cache_lock = RLock()
@@ -842,8 +842,31 @@ class DataFetcherManager:
         cls._daily_source_health.record_success(cls._daily_health_key(fetcher, market))
 
     @classmethod
-    def _record_daily_source_failure(cls, fetcher: BaseFetcher, market: str, error: str) -> None:
-        cls._daily_source_health.record_failure(cls._daily_health_key(fetcher, market), error=error)
+    def _record_daily_source_failure(
+        cls,
+        fetcher: BaseFetcher,
+        market: str,
+        error: str,
+        error_type: str = "",
+    ) -> None:
+        normalized = f"{error_type} {error}".lower()
+        transport_failure = any(
+            marker in normalized
+            for marker in (
+                "remotedisconnected",
+                "protocolerror",
+                "connectionerror",
+                "connection aborted",
+                "remote end closed",
+                "timeout",
+                "timed out",
+            )
+        )
+        cls._daily_source_health.record_failure(
+            cls._daily_health_key(fetcher, market),
+            error=error,
+            weight=2 if transport_failure else 1,
+        )
 
     @classmethod
     def reset_daily_source_health(cls) -> None:
@@ -1415,7 +1438,7 @@ class DataFetcherManager:
                             f"[数据源失败 {attempt}/{total_fetchers}] [{fetcher.name}] {stock_code}: "
                             f"error_type={error_type}, reason={error_reason}"
                         )
-                        self._record_daily_source_failure(fetcher, market, error_reason)
+                        self._record_daily_source_failure(fetcher, market, error_reason, error_type)
                         errors.append(error_msg)
                     break
 
@@ -1496,7 +1519,7 @@ class DataFetcherManager:
                     f"[数据源失败 {attempt}/{total_fetchers}] [{fetcher.name}] {stock_code}: "
                     f"error_type={error_type}, reason={error_reason}"
                 )
-                self._record_daily_source_failure(fetcher, market, error_reason)
+                self._record_daily_source_failure(fetcher, market, error_reason, error_type)
                 errors.append(error_msg)
                 if attempt < total_fetchers:
                     next_fetcher = fetchers[attempt]

@@ -101,6 +101,26 @@ const settingsHelpZhCN: SettingsHelpMap = {
     usage: '默认 1。官方 API、中转渠道与本地 CLI 的报告生成共享此上限；行情和新闻准备不受影响。',
     valueNotes: ['使用默认模型配置时，这个字段不会改变分析任务线程数。'],
   },
+  'settings.ai_model.LITELLM_ANALYSIS_TIMEOUT_SECONDS': {
+    title: '分析模型超时（秒）', summary: '限制普通分析模型的一次请求时长。',
+    usage: '默认 90 秒；超时后按现有顺序切换下一备用模型。',
+  },
+  'settings.ai_model.LITELLM_FAST_MODEL_TIMEOUT_SECONDS': {
+    title: '快速模型超时（秒）', summary: '限制名称包含 flash 的快速模型请求时长。',
+    usage: '默认 60 秒，避免快速兜底模型反而长时间阻塞。',
+  },
+  'settings.ai_model.LITELLM_QUALITY_FALLBACK_TIMEOUT_SECONDS': {
+    title: '高质量备用超时（秒）', summary: '限制 Claude/Sonnet 等最终高质量备用模型请求时长。',
+    usage: '默认 120 秒，为高质量最终兜底保留更充足的生成时间。',
+  },
+  'settings.ai_model.LITELLM_CIRCUIT_FAILURE_THRESHOLD': {
+    title: '模型熔断失败阈值', summary: '同一模型连续失败达到该次数后暂时跳过。',
+    usage: '默认 2；只影响故障切换等待，不改变模型顺序、提示词或评分。',
+  },
+  'settings.ai_model.LITELLM_CIRCUIT_COOLDOWN_SECONDS': {
+    title: '模型熔断冷却（秒）', summary: '控制失败模型多久后允许再次探测。',
+    usage: '默认 180 秒；冷却结束后会自动恢复探测。',
+  },
   'settings.ai_model.LOCAL_CLI_BACKEND_MAX_CONCURRENCY': {
     title: '本地命令行最大并发',
     summary: '限制同时启动多少个本地命令行生成进程。',
@@ -1335,6 +1355,26 @@ const settingsHelpEnUS: SettingsHelpMap = {
     summary: 'Limits how many model generation jobs may run at the same time.',
     usage: 'Default is 1. Official APIs, relay channels, and local CLI report generation share this cap; market-data and news preparation remain parallel.',
     valueNotes: ['When using Default model settings, this does not change the number of analysis worker tasks.'],
+  },
+  'settings.ai_model.LITELLM_ANALYSIS_TIMEOUT_SECONDS': {
+    title: 'Analysis Model Timeout (Seconds)', summary: 'Limits one request to a regular analysis model.',
+    usage: 'Default is 90 seconds; timeout advances to the next configured fallback.',
+  },
+  'settings.ai_model.LITELLM_FAST_MODEL_TIMEOUT_SECONDS': {
+    title: 'Fast Model Timeout (Seconds)', summary: 'Limits requests to model names containing flash.',
+    usage: 'Default is 60 seconds.',
+  },
+  'settings.ai_model.LITELLM_QUALITY_FALLBACK_TIMEOUT_SECONDS': {
+    title: 'Quality Fallback Timeout (Seconds)', summary: 'Limits Claude/Sonnet quality fallback requests.',
+    usage: 'Default is 120 seconds.',
+  },
+  'settings.ai_model.LITELLM_CIRCUIT_FAILURE_THRESHOLD': {
+    title: 'Model Circuit Failure Threshold', summary: 'Temporarily skips a model after consecutive failures.',
+    usage: 'Default is 2. This changes wait/failover behavior, not prompts or scoring.',
+  },
+  'settings.ai_model.LITELLM_CIRCUIT_COOLDOWN_SECONDS': {
+    title: 'Model Circuit Cooldown (Seconds)', summary: 'Controls when a failed model may be probed again.',
+    usage: 'Default is 180 seconds.',
   },
   'settings.ai_model.LOCAL_CLI_BACKEND_MAX_CONCURRENCY': {
     title: 'Local Command Max Concurrency',

@@ -170,6 +170,7 @@ test('local backend overlays include split-module runtime dependencies', (t) => 
     'src/core/market_review_runtime.py',
     'src/core/trading_calendar.py',
     'src/services/run_diagnostics.py',
+    'src/services/run_flow.py',
     'src/services/market_dashboard_service.py',
     'src/services/stock_service.py',
     'src/services/task_queue.py',
@@ -515,7 +516,9 @@ test('buildBackendEnvironment extends macOS GUI PATH with Homebrew CLI directori
   assert.equal(env.ENV_FILE, '/tmp/dsa/.env');
   assert.equal(env.DATABASE_PATH, '/tmp/dsa/data.db');
   assert.equal(env.STOCKMASTER_TASK_STATE_PATH.replaceAll('\\', '/'), '/tmp/dsa/unfinished-analysis-tasks.json');
+  assert.equal(env.STOCKMASTER_ANALYSIS_CHECKPOINT_PATH.replaceAll('\\', '/'), '/tmp/dsa/prepared-analysis-checkpoints.json');
   assert.equal(env.STOCKMASTER_SHARED_FETCHER_CACHE, 'true');
+  assert.equal(env.TQDM_DISABLE, '1');
   assert.equal(env.LOG_DIR, '/tmp/dsa/logs');
   assert.equal(env.WEBUI_HOST, '127.0.0.1');
 });

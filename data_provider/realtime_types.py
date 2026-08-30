@@ -403,13 +403,19 @@ class CircuitBreaker:
             state['failures'] = 0
             state['half_open_calls'] = 0
     
-    def record_failure(self, source: str, error: Optional[str] = None) -> None:
+    def record_failure(
+        self,
+        source: str,
+        error: Optional[str] = None,
+        *,
+        weight: int = 1,
+    ) -> None:
         """记录失败请求"""
         with self._lock:
             state = self._get_state_locked(source)
             current_time = time.time()
 
-            state['failures'] += 1
+            state['failures'] += max(1, int(weight))
             state['last_failure_time'] = current_time
 
             if state['state'] == self.HALF_OPEN:

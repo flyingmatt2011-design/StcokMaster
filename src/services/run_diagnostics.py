@@ -214,6 +214,33 @@ class LLMRun:
 
 
 @dataclass
+class StageRun:
+    """One non-provider pipeline stage result in a trace."""
+
+    trace_id: str
+    stage: str
+    label: str
+    success: bool
+    duration_ms: Optional[int] = None
+    error_message_sanitized: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload = {
+            "trace_id": self.trace_id,
+            "stage": self.stage,
+            "label": self.label,
+            "success": self.success,
+            "duration_ms": self.duration_ms,
+            "error_message_sanitized": self.error_message_sanitized,
+            "metadata": sanitize_diagnostic_metadata(self.metadata),
+            "created_at": self.created_at,
+        }
+        return {key: value for key, value in payload.items() if value not in (None, {}, [])}
+
+
+@dataclass
 class NotificationRun:
     """Notification dispatch result in a trace."""
 
@@ -329,6 +356,7 @@ class RunDiagnosticContext:
     scope: Optional[str] = None
     provider_runs: List[ProviderRun] = field(default_factory=list)
     llm_runs: List[LLMRun] = field(default_factory=list)
+    stage_runs: List[StageRun] = field(default_factory=list)
     notification_runs: List[NotificationRun] = field(default_factory=list)
     history_runs: List[HistoryRun] = field(default_factory=list)
     event_sink: Optional[Callable[[Dict[str, Any]], None]] = None
@@ -461,6 +489,10 @@ class RunDiagnosticContext:
         self.notification_runs.append(notification_run)
         self._emit_flow_event(_notification_flow_event(self, notification_run, len(self.notification_runs)))
 
+    def record_stage_run(self, stage_run: StageRun) -> None:
+        self.stage_runs.append(stage_run)
+        self._emit_flow_event(_stage_flow_event(self, stage_run, len(self.stage_runs)))
+
     def record_history_run(self, history_run: HistoryRun) -> None:
         self.history_runs.append(history_run)
         self._emit_flow_event(_history_flow_event(self, history_run, len(self.history_runs)))
@@ -490,6 +522,7 @@ class RunDiagnosticContext:
                 run.to_dict() for run in self.provider_runs
             ),
             "llm_runs": [run.to_dict() for run in self.llm_runs],
+            "stage_runs": [run.to_dict() for run in self.stage_runs],
             "notification_runs": [run.to_dict() for run in self.notification_runs],
             "history_runs": [run.to_dict() for run in self.history_runs],
         }
@@ -811,6 +844,49 @@ def _llm_flow_event(
     }
 
 
+def _stage_flow_event(
+    context: RunDiagnosticContext,
+    run: StageRun,
+    index: int,
+) -> Dict[str, Any]:
+    stage_key = _safe_event_key(run.stage) or f"stage_{index}"
+    node_id = f"stage_{stage_key}_{index}"
+    status = "success" if run.success else "failed"
+    started_at = _started_at_from_end_and_duration(run.created_at, run.duration_ms)
+    message = (
+        f"{run.label}完成"
+        if run.success
+        else f"{run.label}失败：{run.error_message_sanitized or '未知错误'}"
+    )
+    return {
+        "timestamp": run.created_at,
+        "severity": "success" if run.success else "danger",
+        "type": "stage_run",
+        "node_id": node_id,
+        "title": message,
+        "message": sanitize_diagnostic_text(message, max_length=220),
+        "metadata": _clean_metadata(
+            {
+                "trace_id": context.trace_id,
+                "stage": run.stage,
+                "duration_ms": run.duration_ms,
+                "details": run.metadata,
+                "node": {
+                    "id": node_id,
+                    "lane": "analysis",
+                    "kind": "analysis",
+                    "label": run.label,
+                    "status": status,
+                    "started_at": started_at,
+                    "ended_at": run.created_at,
+                    "duration_ms": run.duration_ms,
+                    "message": message,
+                },
+            }
+        ),
+    }
+
+
 def _history_flow_event(
     context: RunDiagnosticContext,
     run: HistoryRun,
@@ -1009,6 +1085,35 @@ def record_llm_run_started(
         )
     except Exception as exc:  # pragma: no cover - defensive fail-open guard
         logger.warning("llm started diagnostic record failed: %s", exc)
+
+
+def record_stage_run(
+    *,
+    stage: str,
+    label: str,
+    success: bool,
+    duration_ms: Optional[int] = None,
+    error_message: Optional[Any] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Append a timed pipeline stage without affecting analysis behavior."""
+    context = get_current_diagnostic_context()
+    if context is None:
+        return
+    try:
+        context.record_stage_run(
+            StageRun(
+                trace_id=context.trace_id,
+                stage=stage,
+                label=label,
+                success=success,
+                duration_ms=duration_ms,
+                error_message_sanitized=sanitize_diagnostic_text(error_message),
+                metadata=metadata or {},
+            )
+        )
+    except Exception as exc:  # pragma: no cover - defensive fail-open guard
+        logger.warning("stage diagnostic record failed: %s", exc)
 
 
 def record_notification_run(

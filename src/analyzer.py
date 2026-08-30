@@ -14,6 +14,7 @@ import json
 import logging
 import math
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple, Callable
@@ -101,11 +102,111 @@ from src.schemas.decision_scale import (
 from src.schemas.report_schema import AnalysisReportSchema
 from src.market_context import detect_market, get_market_role, get_market_guidelines
 from src.services.daily_market_context import format_daily_market_context_prompt_section
+from src.services.run_diagnostics import record_llm_run, record_llm_run_started
 from src.market_phase_prompt import format_market_phase_prompt_section
 from src.market_structure_prompt import format_market_structure_prompt_section
 from src.analysis_text_normalization import _localized_text, _normalize_risk_warning_values
 
 logger = logging.getLogger(__name__)
+
+
+class _ModelCircuitOpen(RuntimeError):
+    """Raised internally when a recently failing model is in cooldown."""
+
+
+class _ModelRuntimePolicy:
+    """Process-local per-model circuit breaker and adaptive concurrency gate."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition(threading.RLock())
+        self._states: Dict[str, Dict[str, Any]] = {}
+
+    @staticmethod
+    def _base_limit(model: str, configured_limit: int) -> int:
+        normalized = (model or "").lower()
+        configured_limit = max(1, int(configured_limit or 1))
+        if "claude" in normalized or "sonnet" in normalized:
+            return 1
+        if "flash" in normalized:
+            return configured_limit
+        return min(configured_limit, 2)
+
+    def acquire(
+        self,
+        model: str,
+        *,
+        configured_limit: int,
+        failure_threshold: int,
+        cooldown_seconds: int,
+    ) -> None:
+        key = (model or "unknown").strip().lower()
+        with self._condition:
+            state = self._states.setdefault(
+                key,
+                {
+                    "active": 0,
+                    "failures": 0,
+                    "successes": 0,
+                    "limit": self._base_limit(model, configured_limit),
+                    "open_until": 0.0,
+                },
+            )
+            now = time.monotonic()
+            if state["open_until"] > now:
+                remaining = int(state["open_until"] - now)
+                raise _ModelCircuitOpen(f"model circuit open for {remaining}s")
+            if state["open_until"]:
+                state["open_until"] = 0.0
+                state["failures"] = max(0, int(failure_threshold) - 1)
+            while state["active"] >= state["limit"]:
+                self._condition.wait(timeout=0.5)
+                now = time.monotonic()
+                if state["open_until"] > now:
+                    raise _ModelCircuitOpen("model circuit opened while waiting")
+            state["active"] += 1
+
+    def release(
+        self,
+        model: str,
+        *,
+        success: bool,
+        duration_seconds: float,
+        configured_limit: int,
+        failure_threshold: int,
+        cooldown_seconds: int,
+    ) -> None:
+        key = (model or "unknown").strip().lower()
+        with self._condition:
+            state = self._states.get(key)
+            if state is None:
+                return
+            state["active"] = max(0, int(state["active"]) - 1)
+            base_limit = self._base_limit(model, configured_limit)
+            if success:
+                state["failures"] = 0
+                state["successes"] = int(state["successes"]) + 1
+                if duration_seconds <= 45 and state["successes"] >= 3:
+                    state["limit"] = min(base_limit, int(state["limit"]) + 1)
+                    state["successes"] = 0
+            else:
+                state["successes"] = 0
+                state["failures"] = int(state["failures"]) + 1
+                state["limit"] = max(1, int(state["limit"]) - 1)
+                if state["failures"] >= max(1, int(failure_threshold)):
+                    state["open_until"] = time.monotonic() + max(1, int(cooldown_seconds))
+            self._condition.notify_all()
+
+
+_MODEL_RUNTIME_POLICY = _ModelRuntimePolicy()
+
+
+def _model_timeout_seconds(config: Config, model: str) -> int:
+    normalized = (model or "").lower()
+    if "flash" in normalized:
+        return int(getattr(config, "litellm_fast_model_timeout_seconds", 60))
+    if "claude" in normalized or "sonnet" in normalized:
+        return int(getattr(config, "litellm_quality_fallback_timeout_seconds", 120))
+    return int(getattr(config, "litellm_analysis_timeout_seconds", 90))
 
 
 def _today_has_realtime_overlay(today: Any) -> bool:
@@ -2462,7 +2563,9 @@ class GeminiAnalyzer:
                 self._router = Router(
                     model_list=router_model_list,
                     routing_strategy="simple-shuffle",
-                    num_retries=2,
+                    # The explicit model route below owns retry/fallback. Keeping
+                    # Router retries enabled multiplies the worst-case wait.
+                    num_retries=0,
                 )
             except TypeError:
                 logger.debug("Analyzer LLM: Router constructor signature not compatible; fallback to direct mode")
@@ -2507,7 +2610,7 @@ class GeminiAnalyzer:
                 self._router = Router(
                     model_list=legacy_model_list,
                     routing_strategy="simple-shuffle",
-                    num_retries=2,
+                    num_retries=0,
                 )
             except TypeError:
                 logger.debug("Analyzer LLM: Legacy Router constructor signature not compatible; using legacy model_list fallback")
@@ -3111,6 +3214,36 @@ class GeminiAnalyzer:
             usage_model, usage_provider = resolved_model_provider_identity(model, recovery_model_list)
 
             try:
+                _MODEL_RUNTIME_POLICY.acquire(
+                    model,
+                    configured_limit=getattr(config, "generation_backend_max_concurrency", 1),
+                    failure_threshold=getattr(config, "litellm_circuit_failure_threshold", 2),
+                    cooldown_seconds=getattr(config, "litellm_circuit_cooldown_seconds", 180),
+                )
+            except _ModelCircuitOpen as exc:
+                logger.warning("[LiteLLM] skipping %s: %s", model, exc)
+                last_error = exc
+                record_llm_run(
+                    success=False,
+                    provider=usage_provider,
+                    model=model,
+                    call_type="analysis_model",
+                    duration_ms=0,
+                    error_type=type(exc).__name__,
+                    error_message=exc,
+                )
+                continue
+
+            attempt_started = time.monotonic()
+            attempt_success = False
+            attempt_error: Optional[BaseException] = None
+            record_llm_run_started(
+                provider=usage_provider,
+                model=model,
+                call_type="analysis_model",
+            )
+
+            try:
                 def _attach_usage_audit(
                     usage: Dict[str, Any],
                     messages: List[Dict[str, Any]],
@@ -3144,8 +3277,12 @@ class GeminiAnalyzer:
                     ],
                     "max_tokens": max_tokens,
                 }
-                if requested_timeout not in (None, ""):
-                    call_kwargs["timeout"] = requested_timeout
+                effective_timeout = (
+                    requested_timeout
+                    if requested_timeout not in (None, "")
+                    else _model_timeout_seconds(config, model)
+                )
+                call_kwargs["timeout"] = effective_timeout
                 if extra:
                     call_kwargs["extra_body"] = extra
                 uses_router = (
@@ -3178,8 +3315,7 @@ class GeminiAnalyzer:
                 )
                 hint_result = apply_prompt_cache_hints(call_kwargs, route_context, config)
                 call_kwargs = hint_result.call_kwargs
-                if requested_timeout not in (None, ""):
-                    call_kwargs["timeout"] = requested_timeout
+                call_kwargs["timeout"] = effective_timeout
                 if hint_result.diagnostics:
                     logger.debug("[PromptCache] %s", hint_result.diagnostics)
 
@@ -3249,9 +3385,11 @@ class GeminiAnalyzer:
                     last_usage = _stream_usage
                     if response_validator is not None:
                         response_validator(_stream_text)
+                    attempt_success = True
                     return _stream_text, model, _stream_usage
 
                 if skip_same_model_non_stream:
+                    attempt_error = last_error
                     continue
 
                 response = call_litellm_with_param_recovery(
@@ -3284,14 +3422,36 @@ class GeminiAnalyzer:
                     last_usage = usage
                     if response_validator is not None:
                         response_validator(content)
+                    attempt_success = True
                     return (content, model, usage)
                 raise ValueError("LLM returned empty response")
 
             except Exception as e:
+                attempt_error = e
                 safe_error = self._sanitize_litellm_exception_text(e, config=config, model=model)
                 logger.warning("[LiteLLM] %s failed: %s", model, safe_error)
                 last_error = RuntimeError(f"{type(e).__name__}: {safe_error}")
                 continue
+            finally:
+                attempt_duration = max(0.0, time.monotonic() - attempt_started)
+                _MODEL_RUNTIME_POLICY.release(
+                    model,
+                    success=attempt_success,
+                    duration_seconds=attempt_duration,
+                    configured_limit=getattr(config, "generation_backend_max_concurrency", 1),
+                    failure_threshold=getattr(config, "litellm_circuit_failure_threshold", 2),
+                    cooldown_seconds=getattr(config, "litellm_circuit_cooldown_seconds", 180),
+                )
+                record_llm_run(
+                    success=attempt_success,
+                    provider=usage_provider,
+                    model=model,
+                    call_type="analysis_model",
+                    duration_ms=int(attempt_duration * 1000),
+                    fallback_model=model if model_index > 0 else None,
+                    error_type=type(attempt_error).__name__ if attempt_error else None,
+                    error_message=attempt_error,
+                )
 
         raise _AllModelsFailedError(
             f"All LLM models failed (tried {len(models_to_try)} model(s)). Last error: {last_error}",

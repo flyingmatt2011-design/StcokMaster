@@ -201,6 +201,11 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
                 "GENERATION_BACKEND_TIMEOUT_SECONDS": "300",
                 "GENERATION_BACKEND_MAX_OUTPUT_BYTES": "1048576",
                 "GENERATION_BACKEND_MAX_CONCURRENCY": "2",
+                "LITELLM_ANALYSIS_TIMEOUT_SECONDS": "80",
+                "LITELLM_FAST_MODEL_TIMEOUT_SECONDS": "50",
+                "LITELLM_QUALITY_FALLBACK_TIMEOUT_SECONDS": "110",
+                "LITELLM_CIRCUIT_FAILURE_THRESHOLD": "3",
+                "LITELLM_CIRCUIT_COOLDOWN_SECONDS": "150",
                 "LOCAL_CLI_BACKEND_MAX_CONCURRENCY": "1",
                 "AGENT_GENERATION_BACKEND": " codex_cli ",
             },
@@ -213,6 +218,11 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertEqual(config.generation_backend_timeout_seconds, 300)
         self.assertEqual(config.generation_backend_max_output_bytes, 1048576)
         self.assertEqual(config.generation_backend_max_concurrency, 2)
+        self.assertEqual(config.litellm_analysis_timeout_seconds, 80)
+        self.assertEqual(config.litellm_fast_model_timeout_seconds, 50)
+        self.assertEqual(config.litellm_quality_fallback_timeout_seconds, 110)
+        self.assertEqual(config.litellm_circuit_failure_threshold, 3)
+        self.assertEqual(config.litellm_circuit_cooldown_seconds, 150)
         self.assertEqual(config.local_cli_backend_max_concurrency, 1)
         self.assertEqual(config.agent_generation_backend, "codex_cli")
 

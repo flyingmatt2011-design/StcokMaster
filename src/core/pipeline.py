@@ -88,6 +88,7 @@ from src.services.run_diagnostics import (
     record_llm_run,
     record_llm_run_started,
     record_notification_run,
+    record_stage_run,
     reset_run_diagnostic_context,
     sanitize_diagnostic_text,
 )
@@ -115,6 +116,49 @@ from bot.models import BotMessage
 
 
 logger = logging.getLogger(__name__)
+
+
+def _score_trace_snapshot(result: Any) -> Dict[str, Any]:
+    score = getattr(result, "sentiment_score", None)
+    try:
+        score = int(score) if score is not None else None
+    except (TypeError, ValueError):
+        score = None
+    return {
+        "score": score,
+        "action": normalize_decision_action(getattr(result, "action", None))
+        or str(getattr(result, "decision_type", "") or "").strip()
+        or None,
+        "advice": str(getattr(result, "operation_advice", "") or "").strip() or None,
+    }
+
+
+def _append_score_trace(
+    result: Any,
+    stage: str,
+    *,
+    reason: Any = None,
+) -> None:
+    """Persist score/action provenance without changing any decision value."""
+    dashboard = getattr(result, "dashboard", None)
+    if not isinstance(dashboard, dict):
+        dashboard = {}
+        result.dashboard = dashboard
+    steps = dashboard.setdefault("score_trace", [])
+    if not isinstance(steps, list):
+        steps = []
+        dashboard["score_trace"] = steps
+    step = {"stage": stage, **_score_trace_snapshot(result)}
+    if reason:
+        step["reason"] = reason
+    if steps and all(steps[-1].get(key) == step.get(key) for key in ("score", "action", "advice")):
+        step["changed"] = False
+    else:
+        step["changed"] = True
+    steps.append(step)
+    calibration = dashboard.get("decision_score_calibration")
+    if isinstance(calibration, dict):
+        calibration["steps"] = list(steps)
 
 _shared_fetcher_manager: Optional[DataFetcherManager] = None
 _shared_fetcher_manager_lock = threading.Lock()
@@ -862,6 +906,9 @@ class StockAnalysisPipeline:
                 "market_phase_summary": market_phase_summary,
                 "portfolio_context": portfolio_context,
             }
+            # Persist the exact prepared input before entering the remote LLM
+            # call so an app/backend restart can resume without refetching.
+            prepared_analysis_retry_cache.put(code, prepared_context)
             try:
                 result = self._generate_and_finalize_prepared_analysis(
                     query_id=query_id,
@@ -957,6 +1004,7 @@ class StockAnalysisPipeline:
             raise
 
         if result:
+            finalize_started_at = time.monotonic()
             self._emit_progress(94, f"{stock_name}：正在校验并整理分析结果")
             result.query_id = query_id
             realtime_data = enhanced_context.get("realtime", {})
@@ -972,7 +1020,9 @@ class StockAnalysisPipeline:
             normalize_chip_structure_availability(result, chip_data)
             fill_price_position_if_needed(result, trend_result, realtime_quote)
             action_source_advice = getattr(result, "operation_advice", None)
+            _append_score_trace(result, "llm_output")
             stabilize_decision_with_structure(result, trend_result, fundamental_context)
+            _append_score_trace(result, "structure_and_fundamentals")
             adjustments = apply_phase_decision_guardrails(
                 result,
                 market_phase_summary=market_phase_summary,
@@ -986,6 +1036,7 @@ class StockAnalysisPipeline:
                     code,
                     adjustments,
                 )
+            _append_score_trace(result, "market_phase", reason=adjustments)
             market_context_adjustments = apply_daily_market_context_guardrail(
                 result,
                 daily_market_context=enhanced_context.get("daily_market_context"),
@@ -998,6 +1049,11 @@ class StockAnalysisPipeline:
                     code,
                     market_context_adjustments,
                 )
+            _append_score_trace(
+                result,
+                "daily_market_context",
+                reason=market_context_adjustments,
+            )
             if isinstance(fundamental_context, dict):
                 result.fundamental_context = fundamental_context
             if isinstance(market_structure_context, dict):
@@ -1008,6 +1064,14 @@ class StockAnalysisPipeline:
                 result,
                 report_type=report_type.value,
                 previous_operation_advice=action_source_advice,
+            )
+            _append_score_trace(result, "final_action")
+            record_stage_run(
+                stage="result_finalization",
+                label="结果校验与规则归一",
+                success=True,
+                duration_ms=int((time.monotonic() - finalize_started_at) * 1000),
+                metadata={"score_trace_steps": len(result.dashboard.get("score_trace", [])) if isinstance(result.dashboard, dict) else 0},
             )
 
         if result and result.success:
@@ -1714,6 +1778,7 @@ class StockAnalysisPipeline:
                 if risk_application is not None:
                     pipeline_start_signal = risk_application.post_risk_signal.value
                 initial_action_advice = getattr(result, "operation_advice", None)
+                _append_score_trace(result, "llm_output")
                 self._refresh_decision_action_for_final_result(
                     result,
                     report_type=report_type.value,
@@ -1736,6 +1801,7 @@ class StockAnalysisPipeline:
                     report_type=report_type.value,
                     previous_operation_advice=advice_before_guardrail,
                 )
+                _append_score_trace(result, "structure_and_fundamentals")
                 action_after_guardrail = normalize_decision_action(
                     getattr(result, "action", None)
                 )
@@ -1764,6 +1830,7 @@ class StockAnalysisPipeline:
                     report_type=report_type.value,
                     previous_operation_advice=advice_before_guardrail,
                 )
+                _append_score_trace(result, "market_phase", reason=adjustments)
                 action_after_guardrail = normalize_decision_action(
                     getattr(result, "action", None)
                 )
@@ -1794,6 +1861,11 @@ class StockAnalysisPipeline:
                     result,
                     report_type=report_type.value,
                     previous_operation_advice=advice_before_guardrail,
+                )
+                _append_score_trace(
+                    result,
+                    "daily_market_context",
+                    reason=market_context_adjustments,
                 )
                 action_after_guardrail = normalize_decision_action(
                     getattr(result, "action", None)

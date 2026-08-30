@@ -16,8 +16,10 @@ from src.services.stock_service import StockService
 @pytest.fixture(autouse=True)
 def reset_stock_service_quote_state():
     StockService._reset_realtime_quote_state_for_tests()
+    MarketDashboardService._reset_cache_for_tests()
     yield
     StockService._reset_realtime_quote_state_for_tests()
+    MarketDashboardService._reset_cache_for_tests()
 
 
 def test_market_dashboard_snapshot_does_not_use_news_or_llm():
@@ -47,6 +49,52 @@ def test_market_dashboard_snapshot_does_not_use_news_or_llm():
     assert result["payload"] == payload
     assert result["mode"] == "market_data_only"
     assert result["uses_llm"] is False
+
+
+def test_market_dashboard_snapshot_reuses_short_lived_cache():
+    payload = {"indices": [{"code": "000001"}]}
+    with (
+        patch.object(MarketDashboardService, "_cache_ttl_seconds", return_value=240.0),
+        patch("src.services.market_dashboard_service.MarketAnalyzer") as analyzer_cls,
+    ):
+        analyzer_cls.return_value.get_market_overview.return_value = object()
+        analyzer_cls.return_value.build_market_review_payload.return_value = payload
+        service = MarketDashboardService(config=object())
+        first = service.get_snapshot(region="cn")
+        second = service.get_snapshot(region="cn")
+
+    assert analyzer_cls.call_count == 1
+    assert first["cache_hit"] is False
+    assert second["cache_hit"] is True
+    assert second["payload"] == payload
+
+
+def test_market_dashboard_snapshot_coalesces_concurrent_refreshes():
+    entered = threading.Event()
+    release = threading.Event()
+
+    def fetch_overview(*_args, **_kwargs):
+        entered.set()
+        assert release.wait(timeout=2)
+        return object()
+
+    with (
+        patch.object(MarketDashboardService, "_cache_ttl_seconds", return_value=240.0),
+        patch("src.services.market_dashboard_service.MarketAnalyzer") as analyzer_cls,
+    ):
+        analyzer_cls.return_value.get_market_overview.side_effect = fetch_overview
+        analyzer_cls.return_value.build_market_review_payload.return_value = {"indices": []}
+        service = MarketDashboardService(config=object())
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(service.get_snapshot, "cn")
+            assert entered.wait(timeout=2)
+            second = executor.submit(service.get_snapshot, "cn")
+            time.sleep(0.05)
+            release.set()
+            assert first.result(timeout=2)["payload"] == {"indices": []}
+            assert second.result(timeout=2)["cache_hit"] is True
+
+    assert analyzer_cls.return_value.get_market_overview.call_count == 1
 
 
 def _tencent_quote_payload(code: str, name: str, price: str, change_pct: str) -> str:

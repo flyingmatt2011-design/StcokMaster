@@ -1050,7 +1050,7 @@ class AkshareFetcher(BaseFetcher):
 
             if quotes:
                 circuit_breaker.record_success(source_key)
-            logger.info(
+            logger.debug(
                 "[实时行情-腾讯批量] requested=%d success=%d elapsed=%.2fs",
                 len(normalized_codes),
                 len(quotes),
@@ -1069,7 +1069,7 @@ class AkshareFetcher(BaseFetcher):
                 elapsed=time.time() - started_at,
                 error_type=type(exc).__name__,
             )
-            logger.info(failure_message)
+            logger.warning(failure_message)
             circuit_breaker.record_failure(source_key, failure_message)
             return {}
     

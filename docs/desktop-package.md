@@ -22,6 +22,8 @@ powershell -ExecutionPolicy Bypass -File scripts\run-desktop.ps1
 
 Windows 本地试运行也可以直接双击根目录的 `StockMaster-Start.bat`；启动前会检查 Python 核心依赖，发现缺失时自动执行 `pip install -r requirements.txt`。若当前后端来自已同步的算法运行目录，启动程序会覆盖最新 Web 静态资源；StockMaster 自有后端实现（包括任务入口）则按已保存的共同基线重新执行三方合并，保留兼容的上游改动，并在冲突时以 StockMaster 本轮实现为准。该过程不会改写原项目的分析策略或评分公式。正式的上游算法更新仍只通过设置页确认后的候选运行时切换完成。
 
+桌面后端还会在数据库同目录维护 `unfinished-analysis-tasks.json` 和 `prepared-analysis-checkpoints.json`。前者恢复未完成任务，后者保存进入 LLM 前已准备好的本次输入；后台异常退出后可避免重复抓取行情、基本面和新闻。分析成功后对应检查点自动删除，默认过期时间为 30 分钟，文件仅保存在本机。
+
 ### 分析算法更新（本地试运行）
 
 通过 `StockMaster-Start.bat` 启动时，设置页可以检测原项目的后端分析算法更新，并在发现候选版本后显示“同步更新”按钮。同步只下载允许更新的后端文件及其 `templates/` Jinja 报告模板，不同步 `apps/` 等 UI 目录。对于源仓库与 StockMaster 同时修改的文件，程序使用固定上游基线执行三方合并：无冲突改动自动兼容；只要文件内出现真实冲突，就保留完整的 StockMaster 本地文件，避免跨代码块混合形成语义残缺，并在设置页记录合并数量与冲突数量。切换前会校验所有受影响 Python 文件、编译变更的 Jinja 模板、导入 FastAPI 应用、使用内存数据库初始化 `DatabaseManager`，并在重启后检查 `/api/health`；校验或健康检查失败时会自动恢复上一个可运行版本。
