@@ -368,6 +368,47 @@ export interface AnalysisContextPackOverview {
   metadata: AnalysisContextPackOverviewMetadata;
 }
 
+export type KronosForecastStatus = 'success' | 'unavailable' | 'insufficient_data' | 'failed';
+export type KronosForecastDirection = 'bullish' | 'neutral' | 'bearish';
+
+export interface KronosHistoricalPoint {
+  date: string;
+  close?: number | null;
+}
+
+export interface KronosForecastPoint extends KronosHistoricalPoint {
+  open?: number | null;
+  high?: number | null;
+  low?: number | null;
+  volume?: number | null;
+  amount?: number | null;
+}
+
+export interface KronosForecast {
+  schemaVersion: 1;
+  status: KronosForecastStatus;
+  reason?: string | null;
+  source: 'kronos';
+  scoreIncluded: false;
+  model?: string | null;
+  tokenizer?: string | null;
+  device?: string | null;
+  asOf?: string | null;
+  lookback?: number;
+  horizon?: number;
+  sampleCount?: number;
+  neutralBandPct?: number;
+  currentClose?: number | null;
+  predictedFinalClose?: number | null;
+  predictedReturnPct?: number | null;
+  predictedPathMaxDrawdownPct?: number | null;
+  direction?: KronosForecastDirection;
+  historicalPoints?: KronosHistoricalPoint[];
+  forecastPoints?: KronosForecastPoint[];
+  durationMs?: number;
+  metadata?: Record<string, unknown>;
+}
+
 /** Details section */
 export interface ReportDetails {
   newsContent?: string;
@@ -397,6 +438,7 @@ export interface ReportDetails {
     summary?: string;
     scoreIncluded?: false;
   } | null;
+  kronosForecast?: KronosForecast | null;
   coreConclusion?: string | null;
   riskAlerts?: string[];
   positiveCatalysts?: string[];

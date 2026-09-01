@@ -1254,6 +1254,11 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     sector_rankings=extracted_boards.get("sector_rankings"),
                     concept_rankings=extracted_boards.get("concept_rankings"),
                     market_structure=market_structure,
+                    kronos_forecast=(
+                        raw_result.get("kronos_forecast")
+                        if isinstance(raw_result, dict)
+                        else None
+                    ),
                     core_conclusion=stockmaster_display.get("core_conclusion"),
                     risk_alerts=stockmaster_display.get("risk_alerts", []),
                     positive_catalysts=stockmaster_display.get("positive_catalysts", []),
@@ -1558,6 +1563,7 @@ def _build_analysis_report(
             sector_rankings=extracted_boards.get("sector_rankings"),
             concept_rankings=extracted_boards.get("concept_rankings"),
             market_structure=market_structure,
+            kronos_forecast=raw_result_data.get("kronos_forecast"),
             core_conclusion=stockmaster_display.get("core_conclusion"),
             risk_alerts=stockmaster_display.get("risk_alerts", []),
             positive_catalysts=stockmaster_display.get("positive_catalysts", []),

@@ -29,6 +29,7 @@ type AlgorithmUpdateState = {
   localBaselineCommit?: string;
   localMergedPaths?: string[];
   localConflictPaths?: string[];
+  localProtectionPathCount?: number;
 };
 
 type DesktopApi = {
@@ -231,6 +232,7 @@ const StockMasterSettingsPage: React.FC = () => {
         {updateState?.mergePolicy === 'three-way-local-wins' ? (
           <div className="mt-3 rounded-xl border border-border/70 bg-muted/30 p-3 text-xs text-muted-text" data-testid="algorithm-merge-audit">
             <p className="font-medium text-foreground">合并策略：上游兼容更新 + StockMaster 冲突优先</p>
+            <p className="mt-1">已登记 {updateState.localProtectionPathCount || 0} 个 StockMaster 强需求文件；远端同路径发生冲突时保留本地完整文件。</p>
             <p className="mt-1">本地基线 {updateState.localBaselineCommit?.slice(0, 8) || '未记录'}；已三方合并 {updateState.localMergedPaths?.length || 0} 个文件；本地优先冲突 {updateState.localConflictPaths?.length || 0} 个。</p>
           </div>
         ) : null}

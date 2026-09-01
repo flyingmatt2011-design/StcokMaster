@@ -10,6 +10,7 @@ const categoryTitleMap: Record<UiLanguage, Record<SystemConfigCategory, string>>
   system: '系统设置',
   agent: 'Agent 设置',
   backtest: '回测配置',
+  forecast: '实验性预测',
   uncategorized: '其他',
   },
   en: {
@@ -20,6 +21,7 @@ const categoryTitleMap: Record<UiLanguage, Record<SystemConfigCategory, string>>
     system: 'System',
     agent: 'Agent',
     backtest: 'Backtest',
+    forecast: 'Experimental forecast',
     uncategorized: 'Other',
   },
 };
@@ -33,6 +35,7 @@ const categoryDescriptionMap: Record<UiLanguage, Partial<Record<SystemConfigCate
   system: '管理调度、日志、端口等系统级参数。',
   agent: '管理 Agent 模式、策略与多 Agent 编排配置。',
   backtest: '管理回测开关、评估窗口和引擎参数。',
+  forecast: '管理独立于评分链路的实验性预测。',
   uncategorized: '其他未归类的配置项。',
   },
   en: {
@@ -43,6 +46,7 @@ const categoryDescriptionMap: Record<UiLanguage, Partial<Record<SystemConfigCate
     system: 'Manage scheduling, logging, ports, and system parameters.',
     agent: 'Manage Agent mode, strategies, and multi-agent orchestration.',
     backtest: 'Manage backtest switches, evaluation windows, and engine parameters.',
+    forecast: 'Manage experimental forecasts that stay outside the scoring pipeline.',
     uncategorized: 'Other uncategorized settings.',
   },
 };
@@ -219,6 +223,14 @@ const fieldTitleMap: Record<string, string> = {
   BACKTEST_MIN_AGE_DAYS: '回测最小历史天数',
   BACKTEST_ENGINE_VERSION: '回测引擎版本',
   BACKTEST_NEUTRAL_BAND_PCT: '回测中性区间阈值（%）',
+  KRONOS_ENABLED: '启用 Kronos 预测',
+  KRONOS_MODEL: 'Kronos 模型',
+  KRONOS_TOKENIZER: 'Kronos 分词器',
+  KRONOS_LOOKBACK: 'Kronos 历史窗口',
+  KRONOS_PRED_LEN: 'Kronos 预测交易日',
+  KRONOS_SAMPLE_COUNT: 'Kronos 采样次数',
+  KRONOS_DEVICE: 'Kronos 推理设备',
+  KRONOS_NEUTRAL_BAND_PCT: 'Kronos 震荡阈值（%）',
 };
 
 const fieldDescriptionMap: Record<string, string> = {
@@ -393,6 +405,14 @@ const fieldDescriptionMap: Record<string, string> = {
   BACKTEST_MIN_AGE_DAYS: '仅回测早于该天数的分析记录。',
   BACKTEST_ENGINE_VERSION: '回测引擎版本标识，用于区分结果版本。',
   BACKTEST_NEUTRAL_BAND_PCT: '中性区间阈值百分比，例如 2 表示 -2%~+2%。',
+  KRONOS_ENABLED: '仅在评分和操作建议定稿后生成实验性预测，不参与评分。',
+  KRONOS_MODEL: 'Kronos 模型权重的 Hugging Face ID。',
+  KRONOS_TOKENIZER: '与 Kronos 模型配套的 tokenizer Hugging Face ID。',
+  KRONOS_LOOKBACK: '输入 Kronos 的已完成日线数量，范围 120 到 512。',
+  KRONOS_PRED_LEN: '预测未来 A 股交易日数量，范围 1 到 20。',
+  KRONOS_SAMPLE_COUNT: 'Kronos 内部采样并取均值的路径数量，越大越慢。',
+  KRONOS_DEVICE: 'auto 自动选择 CUDA 或 CPU；设备设置错误会按失败降级。',
+  KRONOS_NEUTRAL_BAND_PCT: '只用于报告中的偏强、震荡、偏弱标签，不改变评分。',
 };
 
 const fieldOptionLabelMap: Record<string, Record<string, string>> = {

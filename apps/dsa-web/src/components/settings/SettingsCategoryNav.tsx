@@ -22,6 +22,7 @@ const categoryIconMap: Partial<Record<SystemConfigCategory, LucideIcon>> = {
   notification: Bell,
   agent: Bot,
   backtest: LineChart,
+  forecast: LineChart,
 };
 
 export const SettingsCategoryNav: React.FC<SettingsCategoryNavProps> = ({

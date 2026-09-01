@@ -11,6 +11,7 @@ import { getReportText, normalizeReportLanguage } from '../../utils/reportLangua
 import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../../utils/decisionAction';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { ShareImageButton } from './ShareImageButton';
+import { KronosForecastPanel } from './KronosForecastPanel';
 
 interface ReportOverviewProps {
   meta: ReportMeta;
@@ -303,6 +304,10 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
               <div><span>{text.actionAdvice}</span><p>{summary.operationAdvice || text.noAdvice}</p></div>
             </div>
           </section>
+
+          {details?.kronosForecast ? (
+            <KronosForecastPanel forecast={details.kronosForecast} />
+          ) : null}
 
           {newsPanel ? (
             <div className="terminal-report-news" data-testid="report-news-slot">

@@ -4,5 +4,29 @@
   "eligibleRoots": ["src/", "data_provider/", "strategies/", "api/", "templates/"],
   "dependencyFiles": ["pyproject.toml", "requirements.txt", "requirements.lock", "poetry.lock"],
   "uiRoots": ["apps/dsa-web/", "apps/dsa-desktop/"],
-  "protectedUserData": [".env", "data/", "logs/", "*.db"]
+  "protectedUserData": [".env", "data/", "logs/", "*.db"],
+  "mergeStrategy": "three-way-local-wins",
+  "conflictResolution": "stockmaster-file-wins",
+  "strongRequirementPaths": [
+    "api/v1/endpoints/analysis.py",
+    "api/v1/endpoints/history.py",
+    "api/v1/schemas/history.py",
+    "api/v1/schemas/system_config.py",
+    "data_provider/base.py",
+    "data_provider/provider_daily_cache.py",
+    "src/analyzer.py",
+    "src/config.py",
+    "src/core/config_registry.py",
+    "src/core/config_registry_categories.py",
+    "src/core/pipeline.py",
+    "src/services/analysis_service.py",
+    "src/services/history_service.py",
+    "src/services/kronos_forecast_service.py",
+    "src/vendor/__init__.py",
+    "src/vendor/kronos/__init__.py",
+    "src/vendor/kronos/kronos.py",
+    "src/vendor/kronos/module.py",
+    "src/vendor/kronos/LICENSE",
+    "src/vendor/kronos/UPSTREAM.md"
+  ]
 }

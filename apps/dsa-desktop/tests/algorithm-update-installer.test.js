@@ -140,6 +140,38 @@ test('candidate staging merges upstream changes while keeping StockMaster confli
   );
 });
 
+test('an upstream file collision cannot replace a StockMaster-only Kronos implementation', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stockmaster-candidate-kronos-'));
+  const current = path.join(root, 'current');
+  const archive = path.join(root, 'archive');
+  const local = path.join(root, 'local');
+  const upstream = path.join(root, 'upstream');
+  const relative = path.join('src', 'services', 'kronos_forecast_service.py');
+  for (const directory of [current, archive, local, upstream]) {
+    await fs.mkdir(path.join(directory, 'src', 'services'), { recursive: true });
+  }
+  await fs.writeFile(path.join(current, 'main.py'), 'VALUE = 1\n');
+  await fs.writeFile(path.join(current, 'server.py'), 'app = object()\n');
+  await fs.writeFile(path.join(archive, relative), 'OWNER = "upstream"\n');
+  await fs.writeFile(path.join(upstream, relative), 'OWNER = "upstream"\n');
+  await fs.writeFile(path.join(local, relative), 'OWNER = "stockmaster"\n');
+
+  const result = await stageBackendCandidate({
+    currentRoot: current,
+    archiveRoot: archive,
+    stagingRoot: path.join(root, 'staging'),
+    eligiblePaths: ['src/services/kronos_forecast_service.py'],
+    localRoot: local,
+    localOverlayPaths: ['src/services/kronos_forecast_service.py'],
+    localBaselineRoot: path.join(root, 'baseline'),
+    localUpstreamRoot: upstream,
+    localChangeStatuses: { 'src/services/kronos_forecast_service.py': 'added' },
+  });
+
+  assert.equal(await fs.readFile(path.join(result.candidateRoot, relative), 'utf8'), 'OWNER = "stockmaster"\n');
+  assert.deepEqual(result.mergeSummary.conflictPaths, ['src/services/kronos_forecast_service.py']);
+});
+
 test('upstream deletion is accepted only when StockMaster did not change the file', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stockmaster-candidate-remove-'));
   const current = path.join(root, 'current');

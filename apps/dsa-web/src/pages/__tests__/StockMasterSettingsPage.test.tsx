@@ -69,6 +69,7 @@ describe('StockMasterSettingsPage', () => {
       localBaselineCommit: 'baselinecommit',
       localMergedPaths: ['src/analyzer.py'],
       localConflictPaths: ['src/analyzer.py'],
+      localProtectionPathCount: 18,
     });
     const state = {
       status: 'idle',
@@ -100,5 +101,6 @@ describe('StockMasterSettingsPage', () => {
     expect(syncAlgorithmUpdate).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/StockMaster 优先解决 1 个冲突/)).toBeInTheDocument();
     expect(screen.getByTestId('algorithm-merge-audit')).toHaveTextContent('本地优先冲突 1 个');
+    expect(screen.getByTestId('algorithm-merge-audit')).toHaveTextContent('已登记 18 个 StockMaster 强需求文件');
   });
 });

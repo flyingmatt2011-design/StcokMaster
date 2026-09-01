@@ -33,6 +33,7 @@ const CATEGORY_DISPLAY_ORDER: Record<string, number> = {
   system: 50,
   agent: 55,
   backtest: 60,
+  forecast: 65,
   uncategorized: 99,
 };
 

@@ -681,6 +681,11 @@ def get_history_detail(
             sector_rankings=extracted_boards.get("sector_rankings"),
             concept_rankings=extracted_boards.get("concept_rankings"),
             market_structure=market_structure,
+            kronos_forecast=(
+                result.get("raw_result", {}).get("kronos_forecast")
+                if isinstance(result.get("raw_result"), dict)
+                else None
+            ),
             core_conclusion=stockmaster_display.get("core_conclusion"),
             risk_alerts=stockmaster_display.get("risk_alerts", []),
             positive_catalysts=stockmaster_display.get("positive_catalysts", []),

@@ -13,5 +13,6 @@ CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
     {"category": "system", "title": "System", "description": "Runtime and scheduling controls.", "display_order": 50},
     {"category": "agent", "title": "Agent", "description": "Agent mode and strategy-skill settings.", "display_order": 55},
     {"category": "backtest", "title": "Backtest", "description": "Backtest engine behavior and evaluation parameters.", "display_order": 60},
+    {"category": "forecast", "title": "Experimental Forecast", "description": "Optional post-analysis forecasts that never affect scoring.", "display_order": 65},
     {"category": "uncategorized", "title": "Uncategorized", "description": "Keys not mapped in the field registry.", "display_order": 99},
 ]

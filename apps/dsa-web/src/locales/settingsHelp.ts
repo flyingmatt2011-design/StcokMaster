@@ -1051,6 +1051,18 @@ const settingsHelpZhCN: SettingsHelpMap = {
   // ------------------------------------------------------------------
   // Backtest configuration
   // ------------------------------------------------------------------
+  'settings.forecast.kronos': {
+    title: 'Kronos 实验性走势预测',
+    summary: '在 StockMaster 评分和操作建议全部定稿后，独立生成未来日线预测并写入最终报告。',
+    usage: '先安装 requirements-kronos.txt，再开启 KRONOS_ENABLED。首次运行会从 Hugging Face 下载配置的模型权重。',
+    valueNotes: [
+      '默认使用 Kronos-small、400 根已完成日线、预测未来 5 个 A 股交易日。',
+      '采样次数越高，推理耗时越长；CPU 设备的首次运行通常最慢。',
+      '震荡阈值只决定报告中的方向标签，不影响任何 StockMaster 分数或建议。',
+    ],
+    impact: ['只新增最终报告预测区块和相应推理耗时；不进入 LLM 输入、评分、护栏或操作建议。'],
+    notes: ['缺少依赖、数据不足、模型下载或推理失败时会降级记录状态，主分析仍正常保存。'],
+  },
   'settings.backtest.BACKTEST_ENABLED': {
     title: '回测开关',
     summary: '启用或关闭历史分析回测功能。',
@@ -2265,6 +2277,18 @@ const settingsHelpEnUS: SettingsHelpMap = {
   // ------------------------------------------------------------------
   // Backtest configuration
   // ------------------------------------------------------------------
+  'settings.forecast.kronos': {
+    title: 'Kronos experimental path forecast',
+    summary: 'Generates a separate daily-bar forecast after StockMaster has finalized its score and action.',
+    usage: 'Install requirements-kronos.txt, then enable KRONOS_ENABLED. The configured model weights are downloaded from Hugging Face on first use.',
+    valueNotes: [
+      'Defaults use Kronos-small, 400 completed daily bars, and a 5-session A-share horizon.',
+      'Higher sample counts increase inference time; first use on CPU is usually the slowest.',
+      'The neutral band only labels the displayed direction and never changes a StockMaster score or action.',
+    ],
+    impact: ['Adds a forecast block and inference time to the final report only; it is excluded from LLM input, scoring, guardrails, and actions.'],
+    notes: ['Missing dependencies, insufficient data, model download errors, and inference errors fail open so the main analysis still saves.'],
+  },
   'settings.backtest.BACKTEST_ENABLED': {
     title: 'Backtest Switch',
     summary: 'Enables or disables historical analysis backtesting.',

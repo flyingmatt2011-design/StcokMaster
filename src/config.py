@@ -1180,6 +1180,16 @@ class Config:
     backtest_min_age_days: int = 14
     backtest_engine_version: str = "v1"
     backtest_neutral_band_pct: float = 2.0
+
+    # === Kronos 实验性 K 线预测（仅报告展示，不参与评分）===
+    kronos_enabled: bool = False
+    kronos_model: str = "NeoQuasar/Kronos-small"
+    kronos_tokenizer: str = "NeoQuasar/Kronos-Tokenizer-base"
+    kronos_lookback: int = 400
+    kronos_pred_len: int = 5
+    kronos_sample_count: int = 5
+    kronos_device: str = "auto"
+    kronos_neutral_band_pct: float = 1.0
     
     # === 日志配置 ===
     log_dir: str = "./logs"  # 日志文件目录
@@ -2182,6 +2192,40 @@ class Config:
                 2.0,
                 field_name='BACKTEST_NEUTRAL_BAND_PCT',
                 minimum=0.0,
+            ),
+            kronos_enabled=parse_env_bool(os.getenv('KRONOS_ENABLED'), default=False),
+            kronos_model=(os.getenv('KRONOS_MODEL') or 'NeoQuasar/Kronos-small').strip(),
+            kronos_tokenizer=(
+                os.getenv('KRONOS_TOKENIZER') or 'NeoQuasar/Kronos-Tokenizer-base'
+            ).strip(),
+            kronos_lookback=parse_env_int(
+                os.getenv('KRONOS_LOOKBACK'),
+                400,
+                field_name='KRONOS_LOOKBACK',
+                minimum=120,
+                maximum=512,
+            ),
+            kronos_pred_len=parse_env_int(
+                os.getenv('KRONOS_PRED_LEN'),
+                5,
+                field_name='KRONOS_PRED_LEN',
+                minimum=1,
+                maximum=20,
+            ),
+            kronos_sample_count=parse_env_int(
+                os.getenv('KRONOS_SAMPLE_COUNT'),
+                5,
+                field_name='KRONOS_SAMPLE_COUNT',
+                minimum=1,
+                maximum=20,
+            ),
+            kronos_device=(os.getenv('KRONOS_DEVICE') or 'auto').strip().lower(),
+            kronos_neutral_band_pct=parse_env_float(
+                os.getenv('KRONOS_NEUTRAL_BAND_PCT'),
+                1.0,
+                field_name='KRONOS_NEUTRAL_BAND_PCT',
+                minimum=0.0,
+                maximum=20.0,
             ),
             log_dir=os.getenv('LOG_DIR', './logs'),
             log_level=os.getenv('LOG_LEVEL', 'INFO'),

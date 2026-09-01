@@ -277,6 +277,10 @@ class ReportDetails(BaseModel):
     market_structure: Optional[Any] = Field(None, description="市场结构上下文（题材层 + 个股位置层）")
     valuation_history: Optional[Any] = Field(None, description="历史 PE/PB/PS 估值分位（仅作上下文）")
     chart_pattern_context: Optional[Any] = Field(None, description="确定性图形形态（不参与评分）")
+    kronos_forecast: Optional[Any] = Field(
+        None,
+        description="Kronos 实验性 K 线预测（仅展示，不参与评分）",
+    )
 
     core_conclusion: Optional[str] = Field(None, description="StockMaster structured core conclusion")
     risk_alerts: List[str] = Field(default_factory=list, description="StockMaster structured risk alerts")

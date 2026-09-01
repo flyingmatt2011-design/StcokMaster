@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { classifyChangedPaths } = require('../algorithm-update/classifier');
 const { DEFAULT_POLICY } = require('../algorithm-update/constants');
 
@@ -29,4 +31,15 @@ test('unsafe paths are blocked deterministically', () => {
   const result = classifyChangedPaths(['../secret.py', 'src/tool.exe'], DEFAULT_POLICY);
   assert.equal(result.kind, 'unsafe');
   assert.equal(result.blockedPaths.length, 2);
+});
+
+test('packaged update policy mirrors the executable StockMaster protection policy', () => {
+  const packagedPolicy = JSON.parse(fs.readFileSync(
+    path.resolve(__dirname, '..', '..', '..', 'stockmaster', 'algorithm-update-policy.json'),
+    'utf8',
+  ));
+  assert.equal(packagedPolicy.mergeStrategy, DEFAULT_POLICY.mergeStrategy);
+  assert.equal(packagedPolicy.conflictResolution, DEFAULT_POLICY.conflictResolution);
+  assert.deepEqual(packagedPolicy.strongRequirementPaths, DEFAULT_POLICY.strongRequirementPaths);
+  assert.equal(classifyChangedPaths(['requirements-kronos.txt'], DEFAULT_POLICY).kind, 'irrelevant');
 });

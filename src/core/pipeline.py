@@ -1074,6 +1074,13 @@ class StockAnalysisPipeline:
                 metadata={"score_trace_steps": len(result.dashboard.get("score_trace", [])) if isinstance(result.dashboard, dict) else 0},
             )
 
+            if result.success:
+                self._attach_kronos_forecast(
+                    result=result,
+                    code=code,
+                    stock_name=stock_name,
+                )
+
         if result and result.success:
             try:
                 self._emit_progress(97, f"{stock_name}：正在保存分析报告")
@@ -1911,6 +1918,13 @@ class StockAnalysisPipeline:
                         )
                     )
 
+            if result and result.success:
+                self._attach_kronos_forecast(
+                    result=result,
+                    code=code,
+                    stock_name=stock_name,
+                )
+
             resolved_stock_name = result.name if result and result.name else stock_name
 
             # 保存新闻情报到数据库（Agent 工具结果仅用于 LLM 上下文，未持久化，Fixes #396）
@@ -2005,6 +2019,115 @@ class StockAnalysisPipeline:
             logger.error(f"[{code}] Agent 分析失败: {e}")
             logger.exception(f"[{code}] Agent 详细错误信息:")
             return None
+
+    def _attach_kronos_forecast(
+        self,
+        *,
+        result: AnalysisResult,
+        code: str,
+        stock_name: str,
+    ) -> None:
+        """Attach an optional post-decision forecast without changing analysis output."""
+        if not bool(getattr(self.config, "kronos_enabled", False)):
+            return
+
+        started_at = time.monotonic()
+        try:
+            market = get_market_for_stock(normalize_stock_code(code))
+            if market != "cn":
+                return
+            self._emit_progress(96, f"{stock_name}：正在生成 Kronos 实验性预测（不计入评分）")
+            target_date = get_effective_trading_date(market)
+            start_date = target_date - timedelta(days=900)
+            historical_bars = self.db.get_data_range(code, start_date, target_date)
+
+            from src.services.kronos_forecast_service import KronosForecastService
+
+            forecast_service = KronosForecastService(self.config)
+            history_source = "database"
+            if len(historical_bars) < forecast_service.minimum_history_bars():
+                try:
+                    backfill_df, backfill_source = self.fetcher_manager.get_daily_data(
+                        code,
+                        start_date=start_date.isoformat(),
+                        end_date=target_date.isoformat(),
+                        days=max(
+                            forecast_service.minimum_history_bars(),
+                            int(getattr(self.config, "kronos_lookback", 400) or 400),
+                        ),
+                    )
+                    if backfill_df is not None and not backfill_df.empty:
+                        history_source = f"forecast_backfill:{backfill_source}"
+                        try:
+                            self.db.save_daily_data(backfill_df, code, backfill_source)
+                            refreshed_bars = self.db.get_data_range(code, start_date, target_date)
+                        except Exception as persist_exc:
+                            logger.warning(
+                                "%s(%s) Kronos 历史日线回填保存失败，将直接使用本次取数: %s",
+                                stock_name,
+                                code,
+                                persist_exc,
+                            )
+                            refreshed_bars = []
+                        historical_bars = (
+                            refreshed_bars
+                            if len(refreshed_bars) >= len(backfill_df)
+                            else backfill_df.to_dict(orient="records")
+                        )
+                except Exception as backfill_exc:
+                    logger.warning(
+                        "%s(%s) Kronos 历史日线回填失败，将按现有数据继续: %s",
+                        stock_name,
+                        code,
+                        backfill_exc,
+                    )
+
+            result.kronos_forecast = forecast_service.forecast(
+                code=code,
+                bars=historical_bars,
+                market=market,
+            )
+            if isinstance(result.kronos_forecast, dict):
+                metadata = result.kronos_forecast.setdefault("metadata", {})
+                if isinstance(metadata, dict):
+                    metadata.setdefault("history_source", history_source)
+                    metadata.setdefault("available_bars", len(historical_bars))
+            status = (
+                result.kronos_forecast.get("status")
+                if isinstance(result.kronos_forecast, dict)
+                else "skipped"
+            )
+            record_stage_run(
+                stage="kronos_forecast",
+                label="Kronos 实验性预测",
+                success=True,
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+                metadata={"status": status, "score_included": False},
+            )
+        except Exception as exc:
+            logger.warning(
+                "%s(%s) Kronos 预测失败，已按 fail-open 继续: %s",
+                stock_name,
+                code,
+                exc,
+                exc_info=True,
+            )
+            result.kronos_forecast = {
+                "schema_version": 1,
+                "status": "failed",
+                "reason": "forecast_stage_failed",
+                "source": "kronos",
+                "score_included": False,
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
+                "metadata": {"error_type": type(exc).__name__},
+            }
+            record_stage_run(
+                stage="kronos_forecast",
+                label="Kronos 实验性预测",
+                success=True,
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+                metadata={"status": "failed", "score_included": False},
+            )
 
     def _load_agent_analysis_context(self, code: str, stock_name: str) -> Dict[str, Any]:
         """Load daily-bar context for Agent pack summaries without blocking analysis."""

@@ -22,11 +22,15 @@ powershell -ExecutionPolicy Bypass -File scripts\run-desktop.ps1
 
 Windows 本地试运行也可以直接双击根目录的 `StockMaster-Start.bat`；启动前会检查 Python 核心依赖，发现缺失时自动执行 `pip install -r requirements.txt`。若当前后端来自已同步的算法运行目录，启动程序会覆盖最新 Web 静态资源；StockMaster 自有后端实现（包括任务入口）则按已保存的共同基线重新执行三方合并，保留兼容的上游改动，并在冲突时以 StockMaster 本轮实现为准。该过程不会改写原项目的分析策略或评分公式。正式的上游算法更新仍只通过设置页确认后的候选运行时切换完成。
 
+Kronos 实验性预测是可选能力，默认关闭，启动脚本不会自动安装体积较大的 PyTorch 依赖。源码试运行需要先在同一个 Python 环境执行 `python -m pip install -r requirements-kronos.txt`。当前正式安装包也不承诺携带该可选依赖；发布前需要单独评估体积、GPU 运行库和模型缓存策略。未安装时开启 Kronos 只会在报告中显示降级状态，不影响主分析。
+
 桌面后端还会在数据库同目录维护 `unfinished-analysis-tasks.json` 和 `prepared-analysis-checkpoints.json`。前者恢复未完成任务，后者保存进入 LLM 前已准备好的本次输入；后台异常退出后可避免重复抓取行情、基本面和新闻。分析成功后对应检查点自动删除，默认过期时间为 30 分钟，文件仅保存在本机。
 
 ### 分析算法更新（本地试运行）
 
 通过 `StockMaster-Start.bat` 启动时，设置页可以检测原项目的后端分析算法更新，并在发现候选版本后显示“同步更新”按钮。同步只下载允许更新的后端文件及其 `templates/` Jinja 报告模板，不同步 `apps/` 等 UI 目录。对于源仓库与 StockMaster 同时修改的文件，程序使用固定上游基线执行三方合并：无冲突改动自动兼容；只要文件内出现真实冲突，就保留完整的 StockMaster 本地文件，避免跨代码块混合形成语义残缺，并在设置页记录合并数量与冲突数量。切换前会校验所有受影响 Python 文件、编译变更的 Jinja 模板、导入 FastAPI 应用、使用内存数据库初始化 `DatabaseManager`，并在重启后检查 `/api/health`；校验或健康检查失败时会自动恢复上一个可运行版本。
+
+`stockmaster/algorithm-update-policy.json` 与桌面端可执行策略共同登记 StockMaster 强需求文件。设置页会显示当前保护数量；候选运行时先叠加上游兼容改动，再重放这些本地文件。Kronos 的后置预测接入点、结构化持久化、API 字段和 vendored 模型实现均在该清单中。远端 DSA 的 UI、用户配置、数据库、日志、文档以及 `requirements-kronos.txt` 不在选择性同步权限范围内。
 
 当前该能力仅用于源码形态的 Windows 本地试运行。安装包内的后端已被冻结为可执行文件，尚未接入可切换的源码运行时，因此安装包会明确提示不支持直接同步；正式发布安装包前需补齐版本化后端运行时的打包与签名校验链路。
 

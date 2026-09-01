@@ -85,6 +85,7 @@ test('monitor keeps the persisted applied runtime visible after restart', () => 
 test('monitor records the local-wins merge result after activation', () => {
   const monitor = createAlgorithmUpdateMonitor({
     currentCommit: 'a'.repeat(40),
+    localProtectedPaths: ['src/core/pipeline.py', 'src/services/kronos_forecast_service.py'],
     fetchCompare: async () => ({ headCommit: '', changedPaths: [] }),
     classify: () => ({ kind: 'irrelevant', eligiblePaths: [], dependencyPaths: [] }),
   });
@@ -97,6 +98,7 @@ test('monitor records the local-wins merge result after activation', () => {
     },
   });
   assert.equal(state.mergePolicy, 'three-way-local-wins');
+  assert.equal(state.localProtectionPathCount, 2);
   assert.deepEqual(state.localConflictPaths, ['src/config.py']);
   assert.match(state.syncMessage, /StockMaster 优先解决 1 个冲突/);
 });

@@ -1,0 +1,7 @@
+# Optional Kronos forecast runtime. Install only when KRONOS_ENABLED=true.
+# The model implementation is pinned under src/vendor/kronos; weights are
+# downloaded from the configured Hugging Face model IDs on first use.
+torch>=2.0.0
+einops==0.8.1
+huggingface_hub==0.33.1
+safetensors==0.6.2

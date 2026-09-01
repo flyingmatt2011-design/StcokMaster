@@ -8,6 +8,7 @@ function createAlgorithmUpdateMonitor({
   localBaselineCommit = '',
   localMergedPaths = [],
   localConflictPaths = [],
+  localProtectedPaths = [],
   intervalMs = 60_000,
   fetchCompare,
   classify,
@@ -40,10 +41,13 @@ function createAlgorithmUpdateMonitor({
     syncMessage: '',
     appliedCommit: String(appliedCommit || ''),
     lastAppliedAt: String(lastAppliedAt || ''),
-    mergePolicy: String(mergePolicy || ''),
+    mergePolicy: String(mergePolicy || 'three-way-local-wins'),
     localBaselineCommit: String(localBaselineCommit || ''),
     localMergedPaths: Array.isArray(localMergedPaths) ? [...localMergedPaths] : [],
     localConflictPaths: Array.isArray(localConflictPaths) ? [...localConflictPaths] : [],
+    localProtectionPathCount: Array.isArray(localProtectedPaths)
+      ? new Set(localProtectedPaths.map((file) => String(file || '')).filter(Boolean)).size
+      : 0,
   };
 
   function emitState() {

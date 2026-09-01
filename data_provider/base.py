@@ -3778,6 +3778,35 @@ class DataFetcherManager:
             timeout,
             "capital_flow",
         )
+        live_payload = payload if isinstance(payload, dict) else None
+
+        def _has_stock_flow(candidate: Any) -> bool:
+            if not isinstance(candidate, dict):
+                return False
+            stock_flow = candidate.get("stock_flow")
+            return isinstance(stock_flow, dict) and any(
+                value is not None for value in stock_flow.values()
+            )
+
+        used_session_cache = False
+        if _has_stock_flow(live_payload):
+            write_session_cache(
+                "capital_flow_context",
+                stock_code,
+                {"payload": live_payload},
+            )
+        else:
+            cached = read_session_cache("capital_flow_context", stock_code)
+            cached_payload = cached.get("payload") if isinstance(cached, dict) else None
+            if _has_stock_flow(cached_payload):
+                payload = copy.deepcopy(cached_payload)
+                used_session_cache = True
+                logger.warning(
+                    "[资金流] %s 实时获取失败，复用本交易日最近成功结果: %s",
+                    stock_code,
+                    err or "empty live payload",
+                )
+
         if not isinstance(payload, dict):
             return self._build_fundamental_block(
                 "failed",
@@ -3794,11 +3823,28 @@ class DataFetcherManager:
         has_sector_rankings = bool(sector_rankings.get("top")) or bool(sector_rankings.get("bottom"))
         adapter_status = str(payload.get("status", "not_supported"))
         if has_stock_flow or has_sector_rankings:
-            capital_flow_status = "ok"
+            capital_flow_status = "partial" if used_session_cache else "ok"
         elif adapter_status == "not_supported":
             capital_flow_status = "not_supported"
         else:
             capital_flow_status = "partial"
+
+        source_chain = self._normalize_source_chain(
+            payload.get("source_chain", []),
+            "capital_flow",
+            capital_flow_status,
+            cost_ms,
+        )
+        errors = list(payload.get("errors", [])) + ([err] if err else [])
+        if used_session_cache:
+            source_chain.append({
+                "provider": "capital_flow_session_cache",
+                "result": "partial",
+                "duration_ms": 0,
+                "fallback_from": "live_capital_flow",
+            })
+            if live_payload is not None:
+                errors.extend(list(live_payload.get("errors", [])))
 
         return self._build_fundamental_block(
             capital_flow_status,
@@ -3806,13 +3852,8 @@ class DataFetcherManager:
                 "stock_flow": payload.get("stock_flow", {}),
                 "sector_rankings": payload.get("sector_rankings", {}),
             },
-            self._normalize_source_chain(
-                payload.get("source_chain", []),
-                "capital_flow",
-                capital_flow_status,
-                cost_ms,
-            ),
-            list(payload.get("errors", [])) + ([err] if err else []),
+            source_chain,
+            errors,
         )
 
     def get_dragon_tiger_context(self, stock_code: str, budget_seconds: Optional[float] = None) -> Dict[str, Any]:

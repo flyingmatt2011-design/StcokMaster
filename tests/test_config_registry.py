@@ -266,7 +266,7 @@ class TestGenerationBackendFieldsRegistered(unittest.TestCase):
     def test_schema_response_groups_generation_backend_fields(self):
         schema = build_schema_response()
         self.assertEqual(schema["schema_version"], SCHEMA_VERSION)
-        self.assertEqual(SCHEMA_VERSION, "2026-06-29-claude-code-cli-backend")
+        self.assertEqual(SCHEMA_VERSION, "2026-09-01-kronos-forecast")
 
         categories = {
             category["category"]: {field["key"] for field in category["fields"]}

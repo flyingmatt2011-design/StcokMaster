@@ -28,72 +28,12 @@ test('local startup overlays the latest Web UI without replacing the active algo
 });
 
 test('local startup overlays the explicit StockMaster backend files into the active runtime', (t) => {
-  const { syncDevelopmentBackendAdapters } = loadMainModule(t);
+  const { syncDevelopmentBackendAdapters, STOCKMASTER_BACKEND_ADAPTER_FILES } = loadMainModule(t);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'stockmaster-local-api-'));
   t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
   const repoRoot = path.join(tempRoot, 'repo');
   const runtimeRoot = path.join(tempRoot, 'runtime');
-  const adapterFiles = [
-    path.join('api', 'app.py'),
-    path.join('api', 'v1', 'endpoints', 'analysis.py'),
-    path.join('api', 'v1', 'endpoints', 'history.py'),
-    path.join('api', 'v1', 'endpoints', 'stocks.py'),
-    path.join('api', 'v1', 'endpoints', 'system_config.py'),
-    path.join('api', 'v1', 'schemas', 'analysis.py'),
-    path.join('api', 'v1', 'schemas', 'history.py'),
-    path.join('api', 'v1', 'schemas', 'stocks.py'),
-    path.join('api', 'v1', 'schemas', 'system_config.py'),
-    path.join('src', 'services', 'history_service.py'),
-    path.join('src', 'services', 'analysis_service.py'),
-    path.join('src', 'services', 'market_dashboard_service.py'),
-    path.join('src', 'services', 'stock_service.py'),
-    path.join('src', 'services', 'system_config_service.py'),
-    path.join('main.py'),
-    path.join('src', 'core', 'pipeline.py'),
-    path.join('src', 'core', 'config_profiles.py'),
-    path.join('src', 'core', 'pipeline_helpers.py'),
-    path.join('src', 'core', 'config_registry.py'),
-    path.join('src', 'core', 'config_registry_categories.py'),
-    path.join('src', 'core', 'market_review.py'),
-    path.join('src', 'core', 'market_review_runtime.py'),
-    path.join('src', 'core', 'trading_calendar.py'),
-    path.join('src', 'config.py'),
-    path.join('src', 'analyzer.py'),
-    path.join('src', 'analysis_text_normalization.py'),
-    path.join('src', 'market_analyzer.py'),
-    path.join('src', 'storage.py'),
-    path.join('src', 'storage_time.py'),
-    path.join('src', 'search_service.py'),
-    path.join('src', 'search_provider_base.py'),
-    path.join('src', 'utils', 'data_processing.py'),
-    path.join('src', 'services', 'analysis_context_builder.py'),
-    path.join('src', 'services', 'analysis_retry_context.py'),
-    path.join('src', 'services', 'a_share_market_temperature.py'),
-    path.join('src', 'services', 'a_share_structured_intel.py'),
-    path.join('src', 'services', 'chart_pattern_service.py'),
-    path.join('src', 'services', 'intel_context_status.py'),
-    path.join('src', 'services', 'provider_chain_diagnostics.py'),
-    path.join('src', 'services', 'runtime_config_validation.py'),
-    path.join('src', 'services', 'run_diagnostics.py'),
-    path.join('src', 'services', 'task_queue.py'),
-    path.join('src', 'stock_analyzer.py'),
-    path.join('src', 'llm', 'backend_factory.py'),
-    path.join('src', 'llm', 'litellm_backend.py'),
-    path.join('data_provider', 'base.py'),
-    path.join('data_provider', 'baostock_fetcher.py'),
-    path.join('data_provider', 'a_share_valuation.py'),
-    path.join('data_provider', 'baostock_fundamental_adapter.py'),
-    path.join('data_provider', 'chip_distribution.py'),
-    path.join('data_provider', 'fundamental_adapter.py'),
-    path.join('data_provider', 'provider_daily_cache.py'),
-    path.join('data_provider', 'realtime_types.py'),
-    path.join('data_provider', 'akshare_fetcher.py'),
-    path.join('data_provider', 'efinance_fetcher.py'),
-    path.join('templates', '_macros.j2'),
-    path.join('templates', 'report_brief.j2'),
-    path.join('templates', 'report_markdown.j2'),
-    path.join('templates', 'report_wechat.j2'),
-  ];
+  const adapterFiles = STOCKMASTER_BACKEND_ADAPTER_FILES;
   for (const relativePath of adapterFiles) {
     fs.mkdirSync(path.dirname(path.join(repoRoot, relativePath)), { recursive: true });
     fs.writeFileSync(path.join(repoRoot, relativePath), `local:${relativePath}`, 'utf8');
@@ -178,8 +118,13 @@ test('local backend overlays include split-module runtime dependencies', (t) => 
     'src/services/a_share_market_temperature.py',
     'src/services/a_share_structured_intel.py',
     'src/services/chart_pattern_service.py',
+    'src/services/kronos_forecast_service.py',
     'src/services/provider_chain_diagnostics.py',
     'src/services/runtime_config_validation.py',
+    'src/vendor/__init__.py',
+    'src/vendor/kronos/__init__.py',
+    'src/vendor/kronos/kronos.py',
+    'src/vendor/kronos/module.py',
     'templates/_macros.j2',
     'templates/report_brief.j2',
     'templates/report_markdown.j2',
@@ -188,6 +133,17 @@ test('local backend overlays include split-module runtime dependencies', (t) => 
 
   for (const dependency of requiredDependencies) {
     assert.equal(normalizedFiles.has(dependency), true, `missing runtime dependency: ${dependency}`);
+  }
+});
+
+test('every declared StockMaster strong requirement is replayed after an upstream sync', (t) => {
+  const { STOCKMASTER_BACKEND_ADAPTER_FILES } = loadMainModule(t);
+  const { DEFAULT_POLICY } = require('../algorithm-update/constants');
+  const normalizedFiles = new Set(
+    STOCKMASTER_BACKEND_ADAPTER_FILES.map((filePath) => filePath.split(path.sep).join('/')),
+  );
+  for (const protectedPath of DEFAULT_POLICY.strongRequirementPaths) {
+    assert.equal(normalizedFiles.has(protectedPath), true, `strong requirement is not replayed: ${protectedPath}`);
   }
 });
 

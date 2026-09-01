@@ -111,7 +111,7 @@ async function applyLocalOverlayPolicy({
   mergeFile = mergeTextFileLocalWins,
 }) {
   const summary = {
-    policy: 'three-way-local-wins',
+    policy: DEFAULT_POLICY.mergeStrategy,
     overlayPaths: [],
     mergedPaths: [],
     conflictPaths: [],

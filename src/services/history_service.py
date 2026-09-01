@@ -1003,6 +1003,7 @@ class HistoryService:
                 current_price=raw_result.get("current_price"),
                 change_pct=raw_result.get("change_pct"),
                 model_used=raw_result.get("model_used"),
+                kronos_forecast=raw_result.get("kronos_forecast"),
             )
             guardrail_reason = extract_decision_guardrail_reason(raw_result)
             if guardrail_reason:
@@ -1324,6 +1325,52 @@ class HistoryService:
                     invalid_text = f"{invalid_label_template}: {invalid_count}"
                 report_lines.append(f"- {invalid_text}")
             report_lines.append("")
+
+        kronos_forecast = getattr(result, "kronos_forecast", None)
+        if isinstance(kronos_forecast, dict):
+            kronos_title = _label("Kronos Experimental Forecast", "Kronos 实验性走势预测", "Kronos 실험 예측")
+            not_scored = _label(
+                "Display only; not included in scoring or actions.",
+                "仅作展示，不计入评分或操作建议。",
+                "표시 전용이며 점수나 행동 제안에 반영되지 않습니다.",
+            )
+            report_lines.extend([f"### {kronos_title}", "", f"> {not_scored}", ""])
+            if kronos_forecast.get("status") == "success":
+                predicted_return = kronos_forecast.get("predicted_return_pct")
+                predicted_return_text = (
+                    f"{float(predicted_return):+.2f}%"
+                    if isinstance(predicted_return, (int, float))
+                    else "N/A"
+                )
+                report_lines.extend([
+                    f"- {_label('Data as of', '数据截止', '데이터 기준')}: {kronos_forecast.get('as_of') or 'N/A'}",
+                    f"- {_label('Forecast return', '预测涨跌', '예측 수익률')}: {predicted_return_text}",
+                    f"- {_label('Model', '模型', '모델')}: {kronos_forecast.get('model') or 'Kronos'}",
+                    "",
+                ])
+                points = kronos_forecast.get("forecast_points")
+                if isinstance(points, list) and points:
+                    report_lines.extend([
+                        f"| {_label('Session', '交易日', '거래일')} | Close | Low | High |",
+                        "| --- | ---: | ---: | ---: |",
+                    ])
+                    for point in points:
+                        if not isinstance(point, dict):
+                            continue
+                        report_lines.append(
+                            f"| {point.get('date') or 'N/A'} | {point.get('close') or 'N/A'} | "
+                            f"{point.get('low') or 'N/A'} | {point.get('high') or 'N/A'} |"
+                        )
+                    report_lines.append("")
+            else:
+                report_lines.extend([
+                    _label(
+                        "No forecast was generated for this run; the StockMaster report is unaffected.",
+                        "本次未生成预测，StockMaster 主报告不受影响。",
+                        "이번 실행에서는 예측이 생성되지 않았으며 StockMaster 보고서에는 영향이 없습니다.",
+                    ),
+                    "",
+                ])
 
         # ========== 如果没有 dashboard，显示传统格式 ==========
         if not dashboard:

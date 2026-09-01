@@ -90,6 +90,7 @@ function startAlgorithmUpdateMonitor() {
     localBaselineCommit: backendRuntimeContext?.algorithmLocalBaselineCommit || '',
     localMergedPaths: backendRuntimeContext?.algorithmLocalMergedPaths || [],
     localConflictPaths: backendRuntimeContext?.algorithmLocalConflictPaths || [],
+    localProtectedPaths: DEFAULT_POLICY.strongRequirementPaths,
     fetchCompare: fetchUpstreamCompare,
     classify: (paths) => classifyChangedPaths(paths, DEFAULT_POLICY),
     onStateChanged: (state) => {
@@ -162,7 +163,7 @@ function syncDevelopmentWebAssets({ repoRoot = appRootDev, runtimeRoot, enabled 
   return true;
 }
 
-const STOCKMASTER_BACKEND_ADAPTER_FILES = Object.freeze([
+const STOCKMASTER_BACKEND_ADAPTER_FILES = Object.freeze([...new Set([
   path.join('api', 'app.py'),
   path.join('api', 'v1', 'endpoints', 'analysis.py'),
   path.join('api', 'v1', 'endpoints', 'history.py'),
@@ -203,12 +204,17 @@ const STOCKMASTER_BACKEND_ADAPTER_FILES = Object.freeze([
   path.join('src', 'services', 'a_share_structured_intel.py'),
   path.join('src', 'services', 'chart_pattern_service.py'),
   path.join('src', 'services', 'intel_context_status.py'),
+  path.join('src', 'services', 'kronos_forecast_service.py'),
   path.join('src', 'services', 'provider_chain_diagnostics.py'),
   path.join('src', 'services', 'runtime_config_validation.py'),
   path.join('src', 'services', 'run_diagnostics.py'),
   path.join('src', 'services', 'run_flow.py'),
   path.join('src', 'services', 'task_queue.py'),
   path.join('src', 'stock_analyzer.py'),
+  path.join('src', 'vendor', '__init__.py'),
+  path.join('src', 'vendor', 'kronos', '__init__.py'),
+  path.join('src', 'vendor', 'kronos', 'kronos.py'),
+  path.join('src', 'vendor', 'kronos', 'module.py'),
   path.join('src', 'llm', 'backend_factory.py'),
   path.join('src', 'llm', 'litellm_backend.py'),
   path.join('data_provider', 'base.py'),
@@ -225,7 +231,8 @@ const STOCKMASTER_BACKEND_ADAPTER_FILES = Object.freeze([
   path.join('templates', 'report_brief.j2'),
   path.join('templates', 'report_markdown.j2'),
   path.join('templates', 'report_wechat.j2'),
-]);
+  ...DEFAULT_POLICY.strongRequirementPaths.map((file) => path.join(...file.split('/'))),
+])]);
 
 function syncDevelopmentBackendAdapters({ repoRoot = appRootDev, runtimeRoot, enabled = true } = {}) {
   if (!enabled || !runtimeRoot) return false;

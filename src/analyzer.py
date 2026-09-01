@@ -1800,6 +1800,9 @@ class AnalysisResult:
     # ========== 模型标记（Issue #528）==========
     model_used: Optional[str] = None  # 分析使用的 LLM 模型（完整名，如 gemini/gemini-2.0-flash）
 
+    # ========== 实验性预测（评分与 LLM 完成后附加，仅报告展示）==========
+    kronos_forecast: Optional[Dict[str, Any]] = None
+
     # ========== 历史对比（Report Engine P0）==========
     query_id: Optional[str] = None  # 本次分析 query_id，用于历史对比时排除本次记录
 
@@ -1847,6 +1850,7 @@ class AnalysisResult:
             'current_price': self.current_price,
             'change_pct': self.change_pct,
             'model_used': self.model_used,
+            'kronos_forecast': self.kronos_forecast,
             'market_structure_context': self.market_structure_context,
         }
 

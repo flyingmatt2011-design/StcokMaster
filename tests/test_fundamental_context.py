@@ -8,6 +8,7 @@ import sys
 import time
 import unittest
 from threading import BoundedSemaphore, Event
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -620,6 +621,48 @@ class TestFundamentalContext(unittest.TestCase):
                 ):
             ctx = manager.get_capital_flow_context("600519", budget_seconds=0.5)
         self.assertEqual(ctx["status"], "not_supported")
+
+    def test_capital_flow_reuses_same_session_success_when_live_fetch_times_out(self) -> None:
+        manager = DataFetcherManager(fetchers=[])
+        cfg = SimpleNamespace(
+            enable_fundamental_pipeline=True,
+            fundamental_cache_ttl_seconds=120,
+            fundamental_stage_timeout_seconds=1.5,
+            fundamental_fetch_timeout_seconds=0.8,
+            fundamental_retry_max=1,
+        )
+        live_payload = {
+            "status": "partial",
+            "stock_flow": {"main_net_inflow": 36_456_000.0},
+            "sector_rankings": {"top": [], "bottom": []},
+            "source_chain": ["capital_stock:stock_fund_flow_individual"],
+            "errors": [],
+        }
+        with TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {"DATABASE_PATH": os.path.join(temp_dir, "stock_analysis.db")},
+        ), patch("src.config.get_config", return_value=cfg), patch.object(
+            manager,
+            "_run_with_retry",
+            side_effect=[
+                (live_payload, None, 15),
+                (None, "capital_flow timeout", 800),
+            ],
+        ):
+            first = manager.get_capital_flow_context("601899", budget_seconds=0.8)
+            second = manager.get_capital_flow_context("601899", budget_seconds=0.8)
+
+        self.assertEqual(first["status"], "ok")
+        self.assertEqual(second["status"], "partial")
+        self.assertEqual(second["data"]["stock_flow"]["main_net_inflow"], 36_456_000.0)
+        self.assertTrue(
+            any(
+                item.get("provider") == "capital_flow_session_cache"
+                for item in second["source_chain"]
+                if isinstance(item, dict)
+            )
+        )
+        self.assertIn("capital_flow timeout", second["errors"])
 
     def test_get_belong_boards_from_capability_probe(self) -> None:
         fetcher = _DummyBoardFetcher(

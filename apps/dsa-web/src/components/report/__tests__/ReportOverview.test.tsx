@@ -45,6 +45,70 @@ describe('ReportOverview', () => {
     expect(newsSlot).toContainElement(screen.getByTestId('supplemental-news'));
   });
 
+  it('shows Kronos after analysis points and before news without treating it as a score', () => {
+    render(
+      <ReportOverview
+        meta={baseMeta}
+        summary={baseSummary}
+        details={{
+          kronosForecast: {
+            schemaVersion: 1,
+            status: 'success',
+            source: 'kronos',
+            scoreIncluded: false,
+            model: 'NeoQuasar/Kronos-small',
+            asOf: '2026-03-20',
+            horizon: 2,
+            currentClose: 100,
+            predictedFinalClose: 103,
+            predictedReturnPct: 3,
+            direction: 'bullish',
+            historicalPoints: [
+              { date: '2026-03-19', close: 99 },
+              { date: '2026-03-20', close: 100 },
+            ],
+            forecastPoints: [
+              { date: '2026-03-23', close: 101, low: 99, high: 102 },
+              { date: '2026-03-24', close: 103, low: 100, high: 104 },
+            ],
+          },
+        }}
+        newsPanel={<section data-testid="supplemental-news">资讯动态</section>}
+      />,
+    );
+
+    const analysisPanel = screen.getByText('分析要点').closest('section');
+    const kronosPanel = screen.getByTestId('kronos-forecast-panel');
+    const newsSlot = screen.getByTestId('report-news-slot');
+
+    expect(screen.getByText('不计入评分')).toBeVisible();
+    expect(screen.getByText('+3.00%')).toBeVisible();
+    expect(analysisPanel?.nextElementSibling).toBe(kronosPanel);
+    expect(newsSlot.previousElementSibling).toBe(kronosPanel);
+  });
+
+  it('shows a fail-open Kronos state without hiding the main report', () => {
+    render(
+      <ReportOverview
+        meta={baseMeta}
+        summary={baseSummary}
+        details={{
+          kronosForecast: {
+            schemaVersion: 1,
+            status: 'unavailable',
+            reason: 'optional_dependency_missing',
+            source: 'kronos',
+            scoreIncluded: false,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('本次未生成预测')).toBeVisible();
+    expect(screen.getByText('可选运行依赖未安装，请按配置说明安装后重试。')).toBeVisible();
+    expect(screen.getAllByText('趋势维持强势')[0]).toBeVisible();
+  });
+
   it('renders final market phase and partial-bar labels from report metadata', () => {
     render(
       <ReportOverview

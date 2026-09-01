@@ -5239,6 +5239,33 @@ body {
 .terminal-report-panel { margin-bottom: 12px; overflow: hidden; }
 .terminal-report-news { min-width: 0; }
 .terminal-report-news > .home-panel-card { width: 100%; }
+.terminal-kronos-panel > header > div { min-width: 0; }
+.terminal-kronos-subtitle { display: block; margin-top: 2px; overflow: hidden; color: var(--term-dim); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-kronos-badge { flex: 0 0 auto; padding: 2px 6px; border: 1px solid var(--term-grid-strong); border-radius: 2px; color: var(--term-amber); font-family: "IBM Plex Mono", monospace; font-size: 9px; letter-spacing: 0.05em; }
+.terminal-kronos-unavailable { display: grid; gap: 4px; padding: 13px 12px; }
+.terminal-kronos-unavailable strong { color: var(--term-mid); font-size: 12px; }
+.terminal-kronos-unavailable span { color: var(--term-dim); font-size: 10px; }
+.terminal-kronos-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--term-grid); }
+.terminal-kronos-metrics > div { display: grid; gap: 4px; min-width: 0; padding: 9px 12px; border-right: 1px solid var(--term-grid); }
+.terminal-kronos-metrics > div:last-child { border-right: 0; }
+.terminal-kronos-metrics span { color: var(--term-dim); font-size: 9px; letter-spacing: 0.06em; }
+.terminal-kronos-metrics strong { overflow: hidden; color: var(--term-hi); font-size: 15px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-kronos-chart { padding: 10px 12px 6px; border-bottom: 1px solid var(--term-grid); background: linear-gradient(180deg, color-mix(in srgb, var(--term-slate) 4%, transparent), transparent); }
+.terminal-kronos-chart svg { display: block; width: 100%; height: 116px; overflow: visible; }
+.terminal-kronos-chart polyline { fill: none; vector-effect: non-scaling-stroke; stroke-linecap: square; stroke-linejoin: round; }
+.terminal-kronos-axis { stroke: var(--term-grid-strong); stroke-width: 0.35; vector-effect: non-scaling-stroke; }
+.terminal-kronos-history-line { stroke: var(--term-dim); stroke-width: 1.2; }
+.terminal-kronos-forecast-line { stroke: var(--term-amber); stroke-width: 1.7; stroke-dasharray: 3 2; }
+.terminal-kronos-divider { stroke: var(--term-grid-strong); stroke-width: 0.6; stroke-dasharray: 2 2; vector-effect: non-scaling-stroke; }
+.terminal-kronos-chart > div { display: flex; justify-content: space-between; color: var(--term-dim); font-size: 9px; letter-spacing: 0.06em; }
+.terminal-kronos-chart > div span:last-child { color: var(--term-amber); }
+.terminal-kronos-days { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); overflow-x: auto; border-bottom: 1px solid var(--term-grid); }
+.terminal-kronos-days > div { display: grid; gap: 3px; min-width: 92px; padding: 8px 10px; border-right: 1px solid var(--term-grid); }
+.terminal-kronos-days > div:last-child { border-right: 0; }
+.terminal-kronos-days time { color: var(--term-dim); font-size: 9px; }
+.terminal-kronos-days strong { color: var(--term-hi); font-size: 13px; }
+.terminal-kronos-days small { color: var(--term-dim); font-size: 8.5px; }
+.terminal-kronos-meta { display: flex; flex-wrap: wrap; gap: 5px 16px; padding: 7px 12px; color: var(--term-dim); font-family: "IBM Plex Mono", monospace; font-size: 8.5px; }
 .terminal-check-list > div,
 .terminal-analysis-lines > div { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 12px; align-items: start; padding: 8px 12px; border-bottom: 1px solid var(--term-panel-alt); }
 .terminal-check-list > div:last-child,
@@ -5310,6 +5337,9 @@ body {
   .terminal-inline-add { width: 100%; }
   .terminal-watchlist-controls { align-items: flex-start; flex-direction: column; }
   .terminal-batch-row { width: 100%; flex-wrap: wrap; }
+  .terminal-kronos-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .terminal-kronos-metrics > div:nth-child(2) { border-right: 0; }
+  .terminal-kronos-metrics > div:nth-child(-n+2) { border-bottom: 1px solid var(--term-grid); }
 }
 
 @media (prefers-reduced-motion: reduce) {
